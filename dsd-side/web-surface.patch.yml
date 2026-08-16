@@ -1,0 +1,13 @@
+# Mount the desktop ops routes into `dsh web`.
+#
+# Pass it at spawn time:
+#   dsh web --patch web-surface.patch.yml
+#
+# Precondition: `@dsh-desktop/dsh-ops` must be resolvable from the web profile's
+# node_modules (install it next to the profile, e.g. via
+# `dsh plugin --profile web add @dsh-desktop/dsh-ops` or by copying into
+# ~/.dsh/profiles/node_modules/@dsh-desktop/dsh-ops).
+
+- insert:
+    - id: desktop-surface-ops
+      name: '@dsh-desktop/dsh-ops'

@@ -1,0 +1,18 @@
+# Rust
+/target
+**/*.rs.bk
+
+# Node / Tauri CLI
+node_modules/
+dist/
+
+# First-run DSH runtime (installed by scripts/ensure-dsh.ps1, never committed)
+runtime/
+
+# Local logs / state
+*.log
+updates/
+.DS_Store
+
+# Update staging
+*.sig.tmp
