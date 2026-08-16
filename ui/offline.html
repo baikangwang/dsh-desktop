@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>DSH 离线</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; height: 100vh; display: grid; place-items: center;
+      background: #0d1117; color: #c9d1d9; font-family: "Segoe UI", system-ui, sans-serif; }
+    .card { text-align: center; max-width: 420px; padding: 32px; }
+    h1 { color: #f85149; font-size: 20px; margin: 0 0 12px; }
+    p { color: #8b949e; font-size: 13px; line-height: 1.6; }
+    button { margin-top: 16px; padding: 8px 18px; border: 1px solid #30363d;
+      border-radius: 6px; background: #21262d; color: #e6edf3; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>无法连接 DeepSeek Harness 服务</h1>
+    <p>dsh web 未就绪或已退出。可从托盘菜单重启服务，或查看日志定位原因。</p>
+    <button onclick="window.location.reload()">重试</button>
+  </div>
+</body>
+</html>

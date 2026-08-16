@@ -1,0 +1,11 @@
+{
+  "name": "@dsh-desktop/dsh-ops",
+  "version": "0.1.0",
+  "description": "DSH-side routes for the desktop shell: /api/health + /api/admin/shutdown",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js"
+  },
+  "license": "MIT"
+}
