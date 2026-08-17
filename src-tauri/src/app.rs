@@ -6,6 +6,8 @@ use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{AppHandle, Manager};
 use tokio::sync::Mutex;
+use tracing_subscriber::prelude::*;
+use tracing_subscriber::Layer;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -68,11 +70,16 @@ impl AppState {
 }
 
 pub fn setup(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
-        )
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "info".into());
+    let stdout_layer = tracing_subscriber::fmt::layer().with_filter(filter.clone());
+    let file_layer = tracing_subscriber::fmt::layer()
+        .with_writer(LogFileWriter)
+        .with_ansi(false)
+        .with_filter(filter);
+    let _ = tracing_subscriber::registry()
+        .with(stdout_layer)
+        .with(file_layer)
         .try_init();
 
     let config = Config::load().unwrap_or_default();
@@ -130,5 +137,33 @@ pub fn show_offline(app: &AppHandle) {
             }
         }
         let _ = w.show();
+    }
+}
+
+/// Tracing writer for the shell's own log (`%LOCALAPPDATA%\DshDesktop\logs\shell.log`),
+/// with size-based rotation (see `config::rotate_if_large`).
+struct LogFileWriter;
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogFileWriter {
+    type Writer = std::fs::File;
+    fn make_writer(&'a self) -> Self::Writer {
+        let path = crate::config::shell_log_file();
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        crate::config::rotate_if_large(&path);
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .unwrap_or_else(|_| {
+                // Extremely unlikely after create_dir_all; fall back to a
+                // throwaway file so logging never panics the app.
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(std::env::temp_dir().join("dsh-shell.log"))
+                    .expect("temp dir writable")
+            })
     }
 }

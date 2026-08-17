@@ -82,6 +82,7 @@ async fn drain_stderr(stderr: tokio::process::ChildStderr) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
+    config::rotate_if_large(&path);
     let mut lines = BufReader::new(stderr).lines();
     while let Ok(Some(line)) = lines.next_line().await {
         tracing::debug!("dsh stderr: {line}");

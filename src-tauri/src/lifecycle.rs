@@ -6,6 +6,7 @@
 use crate::app::{AppState, RunState};
 use crate::{dsh_manager, health, process_supervisor};
 use anyhow::{anyhow, Result};
+use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
 use tokio::process::Command;
 use std::time::Duration;
@@ -34,6 +35,16 @@ pub async fn supervise(app: &AppHandle) -> Result<()> {
         ));
     }
     tracing::info!("dsh version {installed_ver} (min {})", dsh_manager::MIN_DSH_VERSION);
+
+    // Ensure the ops overlay (`/api/health` + `/api/admin/shutdown`) is
+    // resolvable from the web profile before spawning.
+    let home = config
+        .dsh_home
+        .clone()
+        .unwrap_or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap_or_default().join(".dsh"));
+    if let Err(e) = dsh_manager::ensure_ops_overlay(&home) {
+        tracing::warn!("ops overlay install failed; graceful shutdown will fall back to hard kill: {e:#}");
+    }
 
     let mut attempt: u32 = 0;
     loop {

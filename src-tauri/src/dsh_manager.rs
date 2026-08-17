@@ -83,12 +83,18 @@ impl DshInstall {
     }
 
     /// Build the `dsh web ...` command with the environment contract.
+    ///
+    /// `--patch` must precede the web app's passthrough flags (`--port` etc.):
+    /// the `web` subcommand stops parsing options at the first positional /
+    /// passthrough argument, so a `--patch` after `--port` would be handed to
+    /// the web app's own parser and rejected.
     pub fn command(&self, port: u16, token: &str, config: &config::Config) -> Command {
         let mut cmd = Command::new(&self.node);
-        cmd.arg(&self.dsh_bin)
-            .arg("web")
-            .arg("--port")
-            .arg(port.to_string());
+        cmd.arg(&self.dsh_bin).arg("web");
+        if let Some(patch) = ops_patch_path() {
+            cmd.arg("--patch").arg(patch);
+        }
+        cmd.arg("--port").arg(port.to_string());
         cmd.args(&config.extra_dsh_args);
         cmd.env("DSH_DESKTOP_SHUTDOWN_TOKEN", token);
         if let Some(home) = &config.dsh_home {
@@ -107,6 +113,69 @@ impl DshInstall {
         }
         cmd
     }
+}
+
+/// Locate the `--patch` overlay that mounts the desktop ops routes
+/// (`@dsh-desktop/dsh-ops`: `/api/health` + `/api/admin/shutdown`).
+/// Installed layout: `<install-root>/scripts/web-surface.patch.yml`;
+/// dev layout: `<repo>/dsd-side/web-surface.patch.yml`.
+fn ops_patch_path() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let mut candidates = Vec::new();
+    if let Some(root) = exe.parent().and_then(|p| p.parent()) {
+        candidates.push(root.join("scripts").join("web-surface.patch.yml"));
+    }
+    candidates.push(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("dsd-side")
+            .join("web-surface.patch.yml"),
+    );
+    candidates.into_iter().find(|p| p.exists())
+}
+
+/// Locate the checked-in `@dsh-desktop/dsh-ops` package source.
+/// Installed layout: `<install-root>/scripts/dsd-side/`;
+/// dev layout: `<repo>/dsd-side/`.
+fn ops_plugin_source() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let mut candidates = Vec::new();
+    if let Some(root) = exe.parent().and_then(|p| p.parent()) {
+        candidates.push(root.join("scripts").join("dsd-side"));
+    }
+    candidates.push(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("dsd-side"),
+    );
+    candidates
+        .into_iter()
+        .find(|p| p.join("package.json").exists())
+}
+
+/// Ensure the desktop ops overlay plugin (`@dsh-desktop/dsh-ops`) is
+/// resolvable from the web profile: the Cordis loader resolves inserted
+/// plugins from the profile directory (`<DSH_HOME>/profiles/web/…`, walking
+/// up to `<DSH_HOME>/profiles/node_modules`), NOT from the runtime prefix.
+/// Idempotent copy of the checked-in package.
+pub fn ensure_ops_overlay(home: &Path) -> Result<()> {
+    let src = ops_plugin_source().ok_or_else(|| {
+        anyhow!("dsd-side plugin source not found (dev: repo dsd-side/; installed: scripts/dsd-side/)")
+    })?;
+    let dest = home
+        .join("profiles")
+        .join("node_modules")
+        .join("@dsh-desktop")
+        .join("dsh-ops");
+    std::fs::create_dir_all(&dest).context("create profile node_modules dir")?;
+    for file in ["index.js", "package.json"] {
+        std::fs::copy(src.join(file), dest.join(file))
+            .with_context(|| format!("copy dsd-side {file} into profile node_modules"))?;
+    }
+    tracing::info!("ops overlay installed at {}", dest.display());
+    Ok(())
 }
 
 /// First-run: install the pinned dsh into the private prefix via the bundled

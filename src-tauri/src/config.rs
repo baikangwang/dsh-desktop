@@ -1,7 +1,7 @@
 //! Runtime configuration and well-known filesystem locations.
 
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -46,7 +46,10 @@ impl Config {
             return Ok(Self::default());
         }
         let raw = std::fs::read_to_string(&path)?;
-        Ok(serde_json::from_str(&raw)?)
+        // Tolerate a UTF-8 BOM (PowerShell `-Encoding utf8` writes one); an
+        // unparsed BOM would silently fall back to default config.
+        let raw = raw.trim_start_matches('\u{feff}');
+        Ok(serde_json::from_str(raw)?)
     }
 
     #[allow(dead_code)]
@@ -88,9 +91,31 @@ pub fn dsh_log_file() -> PathBuf {
 }
 
 /// The shell's own structured log.
-#[allow(dead_code)]
 pub fn shell_log_file() -> PathBuf {
     log_dir().join("shell.log")
+}
+
+/// Per-log rotation ceiling (10 MiB) and how many rotated generations to keep.
+pub const LOG_MAX_BYTES: u64 = 10 * 1024 * 1024;
+pub const LOG_KEEP_FILES: u32 = 3;
+
+/// Rotate `path` if it exceeds `LOG_MAX_BYTES`: rename to `path.1`, shuffle
+/// `path.1 → path.2 …` up to `LOG_KEEP_FILES`, dropping the oldest.
+pub fn rotate_if_large(path: &Path) {
+    let oversized = std::fs::metadata(path)
+        .map(|m| m.len() > LOG_MAX_BYTES)
+        .unwrap_or(false);
+    if !oversized {
+        return;
+    }
+    for i in (1..LOG_KEEP_FILES).rev() {
+        let src = PathBuf::from(format!("{}.{i}", path.display()));
+        let dst = PathBuf::from(format!("{}.{}", path.display(), i + 1));
+        if src.exists() {
+            let _ = std::fs::rename(&src, &dst);
+        }
+    }
+    let _ = std::fs::rename(path, PathBuf::from(format!("{}.1", path.display())));
 }
 
 pub fn config_file() -> PathBuf {
