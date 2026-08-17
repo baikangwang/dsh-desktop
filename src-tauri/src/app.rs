@@ -90,6 +90,22 @@ pub fn setup(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
 
     crate::tray::build(app)?;
 
+    // Tray status color watcher: reflect RunState changes on the tray icon.
+    {
+        let handle = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let mut last: Option<RunState> = None;
+            loop {
+                let state = handle.state::<AppState>().status.lock().await.state;
+                if last != Some(state) {
+                    last = Some(state);
+                    crate::tray::update_status_color(&handle, state);
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+        });
+    }
+
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
         if let Err(e) = crate::lifecycle::supervise(&handle).await {

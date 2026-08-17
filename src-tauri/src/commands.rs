@@ -1,7 +1,7 @@
 //! WebView <-> Rust IPC (minimal, lifecycle-only; no arbitrary fs/shell).
 
 use crate::app::{AppState, StatusSnapshot};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, State};
 use tauri_plugin_opener::OpenerExt;
 
 #[tauri::command]

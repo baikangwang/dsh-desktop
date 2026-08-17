@@ -1,5 +1,7 @@
 # Rust
 /target
+/src-tauri/target
+/src-tauri/gen
 **/*.rs.bk
 
 # Node / Tauri CLI
@@ -16,3 +18,8 @@ updates/
 
 # Update staging
 *.sig.tmp
+
+# Sandbox-local tooling / npm cache (workspace-local, never committed)
+.npm-cache/
+.tmp/
+.tools/

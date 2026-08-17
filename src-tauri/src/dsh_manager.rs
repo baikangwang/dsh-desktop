@@ -9,6 +9,50 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tokio::process::Command;
 
+/// Minimum dsh version the shell supports (interface contract C1–C3 + routes).
+/// Keep in sync with the pin in `scripts/ensure-dsh.ps1` (`$DshVersion`).
+pub const MIN_DSH_VERSION: &str = "0.1.0-rc.6";
+
+/// Read the installed `@deepseek-ai/dsh` version from its package.json.
+pub fn installed_version(install: &DshInstall) -> Option<String> {
+    let pkg = install
+        .prefix
+        .join("node_modules")
+        .join("@deepseek-ai")
+        .join("dsh")
+        .join("package.json");
+    let text = std::fs::read_to_string(pkg).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&text).ok()?;
+    json.get("version")
+        .and_then(|v| v.as_str())
+        .map(str::to_owned)
+}
+
+/// Semver-ish gate: `installed >= minimum`. Compares the numeric core
+/// (`major.minor.patch`) segment by segment; a prerelease suffix does not
+/// lower the core, so `0.1.0-rc.6` satisfies a `0.1.0`-family minimum and
+/// `0.1.0-rc.6` satisfies itself.
+pub fn version_at_least(installed: &str, minimum: &str) -> bool {
+    fn core(s: &str) -> &str {
+        s.split('-').next().unwrap_or(s)
+    }
+    fn seg(s: &str, i: usize) -> u64 {
+        core(s)
+            .split('.')
+            .nth(i)
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(0)
+    }
+    for i in 0..4 {
+        let a = seg(installed, i);
+        let b = seg(minimum, i);
+        if a != b {
+            return a > b;
+        }
+    }
+    true
+}
+
 #[derive(Debug, Clone)]
 pub struct DshInstall {
     /// Node binary used to run dsh (bundled runtime node, else system node).

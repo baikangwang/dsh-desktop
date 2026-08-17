@@ -9,7 +9,7 @@ use std::process::Stdio;
 use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::{Child, Command};
+use tokio::process::Child;
 
 pub struct SpawnedServer {
     pub child: Child,
@@ -61,7 +61,7 @@ async fn read_port_from_stdout(
         let line = tokio::time::timeout(remaining, lines.next_line())
             .await
             .map_err(|_| anyhow!("timed out waiting for dsh web URL line"))?
-            .ok_or_else(|| anyhow!("dsh web stdout closed before printing its URL"))?;
+            .map_err(|e| anyhow!("failed to read dsh web stdout: {e}"))?;
         let Some(line) = line else { continue };
         if let Some(caps) = url_re().captures(&line) {
             return caps
@@ -78,6 +78,10 @@ async fn read_port_from_stdout(
 async fn drain_stderr(stderr: tokio::process::ChildStderr) {
     use std::io::Write;
     let path = config::dsh_log_file();
+    // Ensure the logs dir exists (OpenOptions::create only creates the file).
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
     let mut lines = BufReader::new(stderr).lines();
     while let Ok(Some(line)) = lines.next_line().await {
         tracing::debug!("dsh stderr: {line}");

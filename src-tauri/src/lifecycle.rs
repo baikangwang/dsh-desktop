@@ -4,7 +4,7 @@
 //! handle, so the supervisor keeps sole ownership of `tokio::process::Child`.
 
 use crate::app::{AppState, RunState};
-use crate::{config, dsh_manager, health, process_supervisor};
+use crate::{dsh_manager, health, process_supervisor};
 use anyhow::{anyhow, Result};
 use tauri::{AppHandle, Manager};
 use tokio::process::Command;
@@ -22,6 +22,18 @@ pub async fn supervise(app: &AppHandle) -> Result<()> {
             .await;
         dsh_manager::ensure_installed(&install).await?;
     }
+
+    // Version gate: refuse to drive a dsh older than the contract floor
+    // (docs/INTERFACE_CONTRACT.md §6) instead of misparsing its output.
+    let installed_ver = dsh_manager::installed_version(&install).unwrap_or_default();
+    if !dsh_manager::version_at_least(&installed_ver, dsh_manager::MIN_DSH_VERSION) {
+        return Err(anyhow!(
+            "dsh 版本过低：需要 ≥ {}，当前 {}（请运行 scripts/ensure-dsh.ps1 升级）",
+            dsh_manager::MIN_DSH_VERSION,
+            installed_ver
+        ));
+    }
+    tracing::info!("dsh version {installed_ver} (min {})", dsh_manager::MIN_DSH_VERSION);
 
     let mut attempt: u32 = 0;
     loop {
