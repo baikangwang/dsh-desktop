@@ -70,12 +70,21 @@ npm run tauri -- dev    # 验证：spawn dsh web → 解析端口 → 健康就�
 - ✅ 日志滚动（10MiB / 3 代，`config::rotate_if_large`）+ `shell.log` 落盘
 - ✅ 修复 P1 编译错误（原仓库从未构建过）与日志目录缺失 bug；`Config::load` 容忍 BOM
 
-已知待办（P3）：
-- 生产打包：tauri.conf.json 尚无 `resources`（`scripts/` + `dsd-side/` 未进安装包），
-  首次运行的 `ensure_installed` 在安装版中会找不到脚本 —— 需在 bundle 中带上
-- 自更新：启用 `tauri-plugin-updater`（Cargo.toml 注释已预留位置），需要 minisign 公/私钥，配置 `TAURI_SIGNING_PRIVATE_KEY`
-- Authenticode 代码签名（NSIS 安装包）
-- `scripts/release.ps1`：构建 + 签名 + 生成更新清单 latest.json
+已推进（2026-08-17，提交 1a2cf45 / 56229a1 / 555e307）：
+- ✅ 生产打包：`bundle.resources` 把 `scripts/ensure-dsh.ps1`、`scripts/web-surface.patch.yml`、
+  `dsd-side/`（自定义插件）打进安装包；Rust 侧 `resource_dir()` 优先查找
+  （安装版布局 `<install-root>/scripts/...`）；已装包实测：安装版 dsh web 带 patch 启动，
+  `/api/health` 200
+- ✅ 自更新：`tauri-plugin-updater` 已启用 + minisign 密钥对已生成
+  （私钥 `%USERPROFILE%\.tauri\dsh-desktop.key`，密码 `dshdesktop-2026`，**勿入库**；
+  公钥在 tauri.conf.json `plugins.updater.pubkey`）；release 构建产出
+  `DeepSeek Harness_<ver>_x64-setup.exe` + `.sig`
+- ✅ `scripts/release.ps1`：对齐实际产物名，复用 tauri 产出的签名生成 latest.json
+  （`UPDATE_BASE_URL` 必填，`AUTHENTICODE_CERT` 可选）
+
+已知待办（P4）：
+- Authenticode 代码签名（需证书；release.ps1 已留 `AUTHENTICODE_CERT` 钩子）
+- CI 的 `TAURI_SIGNING_PRIVATE_KEY`/`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` secret
 - 待评估：config 界面 / 状态展示细节是否齐全
 
 ## Phase 3 — CI / 发布
