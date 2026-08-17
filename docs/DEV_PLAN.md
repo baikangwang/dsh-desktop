@@ -61,11 +61,21 @@ npm run tauri -- dev    # 验证：spawn dsh web → 解析端口 → 健康就�
 
 先通读 `src-tauri/src/*.rs` 核对 P1 各模块完成度：`app.rs` / `process_supervisor.rs` / `dsh_manager.rs` / `health.rs` / `lifecycle.rs` / `tray.rs` / `commands.rs` / `config.rs`。
 
-已知待办（P2）：
+已推进（2026-08-17，提交 fd65bea / 3ee0062）：
+- ✅ `MIN_DSH_VERSION` 门禁（`dsh_manager.rs`，0.1.0-rc.6，启动校验）
+- ✅ 托盘状态色（黄/绿/橙/红/灰 + tooltip，`tray.rs` + `app.rs` watcher）
+- ✅ 优雅关停路由：`dsh web --patch web-surface.patch.yml` + `@dsh-desktop/dsh-ops`
+  装入 `<DSH_HOME>/profiles/node_modules`（`ensure_ops_overlay`）；
+  已端到端验证：`/api/health` 200、shutdown 无 token 401、带 token 202 且 dsh web 干净退出
+- ✅ 日志滚动（10MiB / 3 代，`config::rotate_if_large`）+ `shell.log` 落盘
+- ✅ 修复 P1 编译错误（原仓库从未构建过）与日志目录缺失 bug；`Config::load` 容忍 BOM
+
+已知待办（P3）：
+- 生产打包：tauri.conf.json 尚无 `resources`（`scripts/` + `dsd-side/` 未进安装包），
+  首次运行的 `ensure_installed` 在安装版中会找不到脚本 —— 需在 bundle 中带上
 - 自更新：启用 `tauri-plugin-updater`（Cargo.toml 注释已预留位置），需要 minisign 公/私钥，配置 `TAURI_SIGNING_PRIVATE_KEY`
 - Authenticode 代码签名（NSIS 安装包）
 - `scripts/release.ps1`：构建 + 签名 + 生成更新清单 latest.json
-- 日志滚动（`dsh-web.log` / `shell.log`，架构文档提到 P2 滚动）
 - 待评估：config 界面 / 状态展示细节是否齐全
 
 ## Phase 3 — CI / 发布
