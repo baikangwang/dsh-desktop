@@ -117,11 +117,14 @@ impl DshInstall {
 
 /// Locate the `--patch` overlay that mounts the desktop ops routes
 /// (`@dsh-desktop/dsh-ops`: `/api/health` + `/api/admin/shutdown`).
-/// Installed layout: `<install-root>/scripts/web-surface.patch.yml`;
+/// Installed layout: `<resource-dir>/scripts/web-surface.patch.yml`;
 /// dev layout: `<repo>/dsd-side/web-surface.patch.yml`.
 fn ops_patch_path() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
     let mut candidates = Vec::new();
+    if let Some(dir) = config::resource_dir() {
+        candidates.push(dir.join("scripts").join("web-surface.patch.yml"));
+    }
+    let exe = std::env::current_exe().ok()?;
     if let Some(root) = exe.parent().and_then(|p| p.parent()) {
         candidates.push(root.join("scripts").join("web-surface.patch.yml"));
     }
@@ -136,11 +139,14 @@ fn ops_patch_path() -> Option<PathBuf> {
 }
 
 /// Locate the checked-in `@dsh-desktop/dsh-ops` package source.
-/// Installed layout: `<install-root>/scripts/dsd-side/`;
+/// Installed layout: `<resource-dir>/scripts/dsd-side/`;
 /// dev layout: `<repo>/dsd-side/`.
 fn ops_plugin_source() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
     let mut candidates = Vec::new();
+    if let Some(dir) = config::resource_dir() {
+        candidates.push(dir.join("scripts").join("dsd-side"));
+    }
+    let exe = std::env::current_exe().ok()?;
     if let Some(root) = exe.parent().and_then(|p| p.parent()) {
         candidates.push(root.join("scripts").join("dsd-side"));
     }
@@ -231,6 +237,13 @@ fn find_on_path() -> Option<PathBuf> {
 }
 
 fn script_path(name: &str) -> Result<PathBuf> {
+    // Production layout: bundled resources at <resource-dir>/scripts/<name>.
+    if let Some(dir) = config::resource_dir() {
+        let candidate = dir.join("scripts").join(name);
+        if candidate.exists() {
+            return Ok(candidate);
+        }
+    }
     let exe = std::env::current_exe()?;
     let root = exe
         .parent()

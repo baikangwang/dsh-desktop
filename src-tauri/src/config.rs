@@ -2,6 +2,19 @@
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+/// Tauri resource dir (bundled install), recorded once at setup. Dev builds
+/// have no resource dir and fall back to repo-relative paths.
+static RESOURCE_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+pub fn set_resource_dir(dir: PathBuf) {
+    let _ = RESOURCE_DIR.set(dir);
+}
+
+pub fn resource_dir() -> Option<&'static PathBuf> {
+    RESOURCE_DIR.get()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]

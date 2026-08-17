@@ -30,11 +30,26 @@
       "icons/icon.ico",
       "icons/icon.png"
     ],
+    "createUpdaterArtifacts": true,
+    "resources": {
+      "../scripts/ensure-dsh.ps1": "scripts/ensure-dsh.ps1",
+      "../dsd-side/index.js": "scripts/dsd-side/index.js",
+      "../dsd-side/package.json": "scripts/dsd-side/package.json",
+      "../dsd-side/web-surface.patch.yml": "scripts/web-surface.patch.yml"
+    },
     "windows": {
       "nsis": {
         "installMode": "currentUser",
         "installerIcon": "icons/icon.ico"
       }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDdEMTlFNkNDRDc1QkVDRDUKUldUVjdGdlh6T1laZlNPOC8vMTNQVTJZL04xbmVUWmkzWThTbG15SjJOUVN2MC81elo0dnZVT1YK",
+      "endpoints": [
+        "https://github.com/baikangwang/deepseek-harness-desktop/releases/latest/download/latest.json"
+      ]
     }
   }
 }

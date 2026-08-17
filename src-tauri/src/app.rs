@@ -82,6 +82,10 @@ pub fn setup(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         .with(file_layer)
         .try_init();
 
+    if let Ok(dir) = app.path().resource_dir() {
+        crate::config::set_resource_dir(dir);
+    }
+
     let config = Config::load().unwrap_or_default();
     let install = DshInstall::resolve()?;
 
