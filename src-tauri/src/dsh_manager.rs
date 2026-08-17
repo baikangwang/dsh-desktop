@@ -90,6 +90,12 @@ impl DshInstall {
     /// the web app's own parser and rejected.
     pub fn command(&self, port: u16, token: &str, config: &config::Config) -> Command {
         let mut cmd = Command::new(&self.node);
+        #[cfg(windows)]
+        {
+            // The shell is a GUI app (no console in release); without this the
+            // console-subsystem node child would pop its own console window.
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        }
         cmd.arg(&self.dsh_bin).arg("web");
         if let Some(patch) = ops_patch_path() {
             cmd.arg("--patch").arg(patch);
@@ -191,7 +197,12 @@ pub async fn ensure_installed(install: &DshInstall) -> Result<()> {
     let node = bundled_node(&install.prefix).or_else(find_on_path).ok_or_else(|| {
         anyhow!("no Node.js runtime found to run the first-run installer")
     })?;
-    let mut child = Command::new("powershell.exe")
+    let mut cmd = Command::new("powershell.exe");
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    let mut child = cmd
         .arg("-NoProfile")
         .arg("-ExecutionPolicy")
         .arg("Bypass")
