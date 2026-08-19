@@ -4,9 +4,8 @@
 //! handle, so the supervisor keeps sole ownership of `tokio::process::Child`.
 
 use crate::app::{AppState, RunState};
-use crate::{dsh_manager, health, process_supervisor};
+use crate::{config, dsh_manager, health, process_supervisor};
 use anyhow::{anyhow, Result};
-use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
 use tokio::process::Command;
 use std::time::Duration;
@@ -16,12 +15,86 @@ pub async fn supervise(app: &AppHandle) -> Result<()> {
     let install = app.state::<AppState>().install.clone();
     let config = app.state::<AppState>().config.clone();
     let token = app.state::<AppState>().shutdown_token.clone();
+    let home = config::resolve_home(&config);
 
+    // --- dsh install / update (long op: shows the progress window) ---
+    let installed = dsh_manager::installed_version(&install);
+    let mut target: Option<String> = None;
     if !install.is_present() {
         app.state::<AppState>()
-            .set_status(RunState::Starting, Some("首次运行：正在安装 DSH 运行时…".into()))
+            .set_status(RunState::Starting, Some("首次运行：安装 DSH 运行时…".into()))
             .await;
-        dsh_manager::ensure_installed(&install).await?;
+        app.state::<AppState>()
+            .set_progress("installing-dsh", "首次运行：安装 DSH 运行时…")
+            .await;
+        match dsh_manager::latest_dsh_version().await {
+            Some(v) => target = Some(v),
+            None => {
+                return Err(anyhow!(
+                    "无法连接 npm registry，且本机没有已安装的 DSH 运行时（首次运行需要网络）"
+                ));
+            }
+        }
+    } else if let Some(current) = &installed {
+        if let Some(latest) = dsh_manager::latest_dsh_version().await {
+            if latest != *current {
+                // Plugin-compatibility gate (R1): only upgrade when every
+                // profile plugin's @deepseek-ai/* peerDeps stay satisfied.
+                let deps = dsh_manager::dsh_dependencies(&latest).await;
+                let bad = match &deps {
+                    Some(d) => dsh_manager::plugin_incompatibilities(&home, d).await,
+                    None => {
+                        tracing::warn!("cannot resolve dsh@{latest} deps; skipping upgrade");
+                        Vec::new()
+                    }
+                };
+                if bad.is_empty() && deps.is_some() {
+                    target = Some(latest.clone());
+                    app.state::<AppState>()
+                        .set_status(RunState::Starting, Some(format!("正在更新 DSH {current} → {latest}…").into()))
+                        .await;
+                    app.state::<AppState>()
+                        .set_progress("updating-dsh", format!("正在更新 DSH {current} → {latest}…"))
+                        .await;
+                } else if !bad.is_empty() {
+                    tracing::warn!("skip dsh upgrade to {latest}: {}", bad.join("; "));
+                    app.state::<AppState>()
+                        .set_progress("checking", format!("已跳过 DSH {latest} 升级（插件兼容性）"))
+                        .await;
+                    for line in &bad {
+                        app.state::<AppState>().push_progress_line(line.clone()).await;
+                    }
+                }
+            }
+        }
+        // registry unreachable: stay on the installed version (offline path)
+    }
+
+    if let Some(version) = target {
+        // Long install: surface the progress window (splash page) and stream.
+        if let Some(w) = app.get_webview_window("main") {
+            let _ = w.show();
+        }
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let handle = app.clone();
+        tauri::async_runtime::spawn(async move {
+            while let Some(line) = rx.recv().await {
+                handle.state::<AppState>().push_progress_line(line).await;
+            }
+        });
+        if let Err(e) = dsh_manager::ensure_dsh(&install, &version, tx).await {
+            let msg = format!("DSH 运行时安装失败: {e:#}");
+            app.state::<AppState>()
+                .set_status(RunState::Error, Some(msg.clone()))
+                .await;
+            return Err(anyhow!(msg));
+        }
+        app.state::<AppState>()
+            .push_progress_line(format!("DSH 运行时就绪 (@deepseek-ai/dsh@{version})"))
+            .await;
+        app.state::<AppState>()
+            .set_progress("ready", "DSH 运行时就绪")
+            .await;
     }
 
     // Version gate: refuse to drive a dsh older than the contract floor
@@ -38,10 +111,6 @@ pub async fn supervise(app: &AppHandle) -> Result<()> {
 
     // Ensure the ops overlay (`/api/health` + `/api/admin/shutdown`) is
     // resolvable from the web profile before spawning.
-    let home = config
-        .dsh_home
-        .clone()
-        .unwrap_or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap_or_default().join(".dsh"));
     if let Err(e) = dsh_manager::ensure_ops_overlay(&home) {
         tracing::warn!("ops overlay install failed; graceful shutdown will fall back to hard kill: {e:#}");
     }

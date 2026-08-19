@@ -4,6 +4,7 @@
   "description": "Default capability for the main window (custom commands + core invoke)",
   "windows": ["main"],
   "permissions": [
-    "core:default"
+    "core:default",
+    "dialog:default"
   ]
 }

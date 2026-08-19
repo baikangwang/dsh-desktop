@@ -134,3 +134,16 @@ pub fn rotate_if_large(path: &Path) {
 pub fn config_file() -> PathBuf {
     data_dir().join("config.json")
 }
+
+/// The DSH home: the config override, else the default `~/.dsh`.
+pub fn resolve_home(config: &Config) -> PathBuf {
+    config
+        .dsh_home
+        .clone()
+        .unwrap_or_else(|| {
+            std::env::var_os("USERPROFILE")
+                .map(PathBuf::from)
+                .unwrap_or_default()
+                .join(".dsh")
+        })
+}

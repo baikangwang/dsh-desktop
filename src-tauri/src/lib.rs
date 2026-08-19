@@ -4,6 +4,7 @@ pub mod config;
 pub mod dsh_manager;
 pub mod health;
 pub mod lifecycle;
+pub mod plugins;
 pub mod process_supervisor;
 pub mod tray;
 
@@ -22,7 +23,7 @@ pub fn run() {
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
         // Close-to-tray: the X button hides the window; the tray "退出" quits.
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
@@ -33,6 +34,7 @@ pub fn run() {
         .setup(|app| app::setup(app.handle()))
         .invoke_handler(tauri::generate_handler![
             commands::get_status,
+            commands::get_boot_progress,
             commands::restart_dsh,
             commands::open_logs,
             commands::quit

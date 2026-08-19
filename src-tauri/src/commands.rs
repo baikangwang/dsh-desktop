@@ -1,12 +1,18 @@
 //! WebView <-> Rust IPC (minimal, lifecycle-only; no arbitrary fs/shell).
 
-use crate::app::{AppState, StatusSnapshot};
+use crate::app::{AppState, BootProgress, StatusSnapshot};
 use tauri::{AppHandle, State};
 use tauri_plugin_opener::OpenerExt;
 
 #[tauri::command]
 pub async fn get_status(state: State<'_, AppState>) -> Result<StatusSnapshot, String> {
     Ok(state.snapshot().await)
+}
+
+/// Progress for the splash window during dsh install/update or plugin install.
+#[tauri::command]
+pub async fn get_boot_progress(state: State<'_, AppState>) -> Result<BootProgress, String> {
+    Ok(state.progress_snapshot().await)
 }
 
 #[tauri::command]

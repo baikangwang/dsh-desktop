@@ -1,11 +1,10 @@
-# release.ps1 — package a signed release: build (with updater signing), then
-# write the Tauri updater manifest (latest.json).
+# release.ps1 — build the offline shell installer and optionally sign it.
 #
-# Requires (in the invoking environment):
-#   TAURI_SIGNING_PRIVATE_KEY / TAURI_SIGNING_PRIVATE_KEY_PATH
-#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD   (if the key has a password)
-#   UPDATE_BASE_URL                       (release host base, e.g. https://.../releases)
-#   AUTHENTICODE_CERT                     (optional: path to an Authenticode cert)
+# The shell upgrade model is "offline package over the old one": distribute the
+# NSIS installer, close the app, install over, relaunch. No update manifest.
+#
+# Requires (optional):
+#   AUTHENTICODE_CERT   path to an Authenticode cert (signtool /f)
 #
 #   powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release.ps1
 
@@ -15,46 +14,23 @@ param(
 $ErrorActionPreference = "Stop"
 
 $root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+
+# 1. Build the installer (the shell never bundles dsh or plugins).
+& npm run tauri -- build
+if ($LASTEXITCODE -ne 0) { throw "tauri build failed (exit $LASTEXITCODE)" }
+
 $bundle = "$root\src-tauri\target\release\bundle\nsis"
 $installer = "DeepSeek Harness_$Version" + "_x64-setup.exe"
 $artifact = Join-Path $bundle $installer
-
 if (-not (Test-Path $artifact)) {
-    throw "installer not found ($artifact); run `npm run tauri -- build` first"
+    throw "installer not found: $artifact"
 }
 
-# 1. Authenticode sign (optional; needs a code-signing cert)
+# 2. Authenticode sign (optional; needs a code-signing cert).
 if ($env:AUTHENTICODE_CERT) {
     & signtool sign /f $env:AUTHENTICODE_CERT /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $artifact
+    if ($LASTEXITCODE -ne 0) { throw "signtool failed" }
 }
 
-# 2. Updater signature: prefer the one tauri produced (createUpdaterArtifacts),
-#    otherwise sign with minisign if available.
-$sigFile = "$artifact.sig"
-if (-not (Test-Path $sigFile)) {
-    if (-not $env:MINISIGN_SECRET) {
-        throw "no $sigFile and MINISIGN_SECRET not set; rebuild with TAURI_SIGNING_PRIVATE_KEY*"
-    }
-    & minisign -S -m $artifact -s $env:MINISIGN_SECRET -x $sigFile -t "dsh-desktop v$Version"
-    if ($LASTEXITCODE -ne 0) { throw "minisign failed" }
-}
-if (-not $env:UPDATE_BASE_URL) {
-    throw "UPDATE_BASE_URL is required (release host base, e.g. https://example.com/releases)"
-}
-
-# 3. Update manifest (upload alongside the artifact)
-$manifest = @{
-    version   = $Version
-    notes     = "Release $Version"
-    pub_date  = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-    platforms = @{
-        "windows-x86_64" = @{
-            url       = "$env:UPDATE_BASE_URL/$installer"
-            signature = (Get-Content $sigFile -Raw).Trim()
-        }
-    }
-} | ConvertTo-Json -Depth 5
-$manifestPath = Join-Path $root "latest.json"
-Set-Content -Path $manifestPath -Value $manifest -Encoding utf8
-
-Write-Host "[release] wrote $manifestPath; upload it and '$installer' to $env:UPDATE_BASE_URL/"
+Write-Host "[release] installer ready: $artifact"
+Write-Host "[release] distribute this file; users close the app, install over, and relaunch."

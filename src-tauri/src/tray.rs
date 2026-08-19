@@ -61,9 +61,13 @@ pub fn update_status_color(app: &AppHandle, state: RunState) {
 pub fn build(app: &AppHandle) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "打开", true, None::<&str>)?;
     let restart = MenuItem::with_id(app, "restart", "重启服务", true, None::<&str>)?;
+    let install_plugin = MenuItem::with_id(app, "install-plugin", "安装插件…", true, None::<&str>)?;
     let logs = MenuItem::with_id(app, "logs", "打开日志", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&open, &restart, &logs, &quit])?;
+    let menu = Menu::with_items(
+        app,
+        &[&open, &restart, &install_plugin, &logs, &quit],
+    )?;
 
     let mut builder = TrayIconBuilder::with_id("main-tray")
         .menu(&menu)
@@ -81,6 +85,9 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
                     }
                     "restart" => {
                         let _ = crate::lifecycle::restart(&app).await;
+                    }
+                    "install-plugin" => {
+                        crate::plugins::pick_and_install(app.clone());
                     }
                     "logs" => {
                         let _ = crate::commands::open_logs(app.clone()).await;

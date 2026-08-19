@@ -35,11 +35,22 @@ impl Default for StatusSnapshot {
     }
 }
 
+/// Long-running boot / plugin-install progress surfaced to the splash window.
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct BootProgress {
+    /// One of: "checking" | "installing-dsh" | "updating-dsh" | "plugin-install" | "ready".
+    pub phase: String,
+    pub message: String,
+    /// Last N streamed lines (npm/pnpm output).
+    pub lines: Vec<String>,
+}
+
 pub struct AppState {
     pub config: Config,
     pub install: DshInstall,
     pub shutdown_token: String,
     pub status: Mutex<StatusSnapshot>,
+    pub progress: Mutex<BootProgress>,
     /// PID of the current `dsh web` child (set by the supervisor; used by
     /// restart/shutdown, which control the child by PID rather than handle).
     pub server_pid: Mutex<Option<u32>>,
@@ -48,6 +59,8 @@ pub struct AppState {
     /// Set by `restart`; forces a restart even when `auto_restart` is off.
     pub force_restart: AtomicBool,
 }
+
+const PROGRESS_MAX_LINES: usize = 200;
 
 impl AppState {
     pub async fn set_status(&self, state: RunState, message: Option<String>) {
@@ -58,6 +71,25 @@ impl AppState {
 
     pub async fn snapshot(&self) -> StatusSnapshot {
         self.status.lock().await.clone()
+    }
+
+    pub async fn set_progress(&self, phase: &str, message: impl Into<String>) {
+        let mut p = self.progress.lock().await;
+        p.phase = phase.to_string();
+        p.message = message.into();
+    }
+
+    pub async fn push_progress_line(&self, line: String) {
+        let mut p = self.progress.lock().await;
+        let over = p.lines.len().saturating_sub(PROGRESS_MAX_LINES - 1);
+        if over > 0 {
+            p.lines.drain(0..over);
+        }
+        p.lines.push(line);
+    }
+
+    pub async fn progress_snapshot(&self) -> BootProgress {
+        self.progress.lock().await.clone()
     }
 
     pub fn is_shutting_down(&self) -> bool {
@@ -94,6 +126,7 @@ pub fn setup(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         install,
         shutdown_token: crate::dsh_manager::fresh_token(),
         status: Mutex::new(StatusSnapshot::default()),
+        progress: Mutex::new(BootProgress::default()),
         server_pid: Mutex::new(None),
         shutting_down: AtomicBool::new(false),
         force_restart: AtomicBool::new(false),
