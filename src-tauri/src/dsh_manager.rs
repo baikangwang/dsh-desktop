@@ -177,11 +177,27 @@ pub fn range_satisfied(version: &str, range: &str) -> bool {
 // npm registry helpers
 // ---------------------------------------------------------------------------
 
+/// Locate `npm-cli.js` next to the system Node runtime (used instead of
+/// `npm.cmd` so the shell can spawn node directly with no console window).
+fn npm_cli_path() -> Option<PathBuf> {
+    let node = find_on_path()?;
+    let cli = node.parent()?.join("node_modules").join("npm").join("bin").join("npm-cli.js");
+    cli.is_file().then_some(cli)
+}
+
 /// Run `npm view <args> --json` with a timeout. None on failure (offline etc.).
+/// Uses `node <npm-cli.js>` with CREATE_NO_WINDOW so no console window pops.
 async fn npm_view(args: &[&str]) -> Option<String> {
+    let node = find_on_path()?;
+    let cli = npm_cli_path()?;
+    let mut cmd = Command::new(node);
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
     let out = tokio::time::timeout(
         std::time::Duration::from_secs(45),
-        Command::new("npm.cmd")
+        cmd.arg(&cli)
             .args(["view", "--json", "--no-audit", "--no-fund", "--loglevel", "error"])
             .args(args)
             .output(),
@@ -195,13 +211,61 @@ async fn npm_view(args: &[&str]) -> Option<String> {
     String::from_utf8(out.stdout).ok()
 }
 
-/// Latest `@deepseek-ai/dsh` version on the registry, if reachable.
+/// TTL for the cached "latest dsh version" lookup, so most startups do not
+/// touch the network at all.
+const LATEST_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(6 * 3600);
+
+fn latest_cache_path() -> PathBuf {
+    config::data_dir().join("cache").join("dsh-latest.json")
+}
+
+fn read_latest_cache() -> Option<String> {
+    let path = latest_cache_path();
+    let text = std::fs::read_to_string(path).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let age = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs()
+        .saturating_sub(json.get("ts")?.as_u64()?);
+    if age > LATEST_CACHE_TTL.as_secs() {
+        return None;
+    }
+    json.get("version")?.as_str().map(str::to_owned)
+}
+
+fn write_latest_cache(version: &str) {
+    let path = latest_cache_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let json = serde_json::json!({ "version": version, "ts": ts });
+    let _ = std::fs::write(path, serde_json::to_string(&json).unwrap_or_default());
+}
+
+/// Whether a fresh "latest version" cache exists (so the startup check will
+/// be instant and touch no network).
+pub fn latest_cache_fresh() -> bool {
+    read_latest_cache().is_some()
+}
+
+/// Latest `@deepseek-ai/dsh` version on the registry (cached for
+/// `LATEST_CACHE_TTL`); falls back to the stale cache when offline.
 pub async fn latest_dsh_version() -> Option<String> {
+    if let Some(cached) = read_latest_cache() {
+        return Some(cached);
+    }
     let json = npm_view(&["@deepseek-ai/dsh@latest", "version"]).await?;
-    serde_json::from_str::<serde_json::Value>(&json)
+    let v = serde_json::from_str::<serde_json::Value>(&json)
         .ok()?
         .as_str()
-        .map(str::to_owned)
+        .map(str::to_owned)?;
+    write_latest_cache(&v);
+    Some(v)
 }
 
 /// Declared dependency map of `@deepseek-ai/dsh@<version>` (name -> range).
@@ -371,12 +435,14 @@ pub async fn ensure_dsh(
         .or_else(find_on_path)
         .ok_or_else(|| anyhow!("no Node.js runtime found to run the installer"))?;
     let mut cmd = Command::new("powershell.exe");
-    #[cfg(windows)]
-    {
-        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    }
+    // -WindowStyle Hidden gives powershell a HIDDEN console (no CREATE_NO_WINDOW:
+    // with no console at all, every console-subsystem child — npm, node, script
+    // powershells — would create its own visible window). Children inherit the
+    // hidden console, so the whole install tree stays silent.
     let mut child = cmd
         .arg("-NoProfile")
+        .arg("-WindowStyle")
+        .arg("Hidden")
         .arg("-ExecutionPolicy")
         .arg("Bypass")
         .arg("-File")
@@ -486,17 +552,21 @@ pub async fn install_plugin_tarball(
     tgz: &Path,
     lines: tokio::sync::mpsc::UnboundedSender<String>,
 ) -> Result<String> {
-    let mut cmd = Command::new(&install.node);
-    #[cfg(windows)]
-    {
-        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    }
-    cmd.arg(&install.dsh_bin)
-        .arg("plugin")
-        .arg("--profile")
-        .arg("web")
-        .arg("add")
-        .arg(tgz);
+    // Run through a hidden-console powershell so `dsh plugin`'s internal
+    // `pnpm` (pnpm.cmd -> cmd.exe) inherits the hidden console instead of
+    // popping its own window.
+    let cmdline = format!(
+        "& '{}' '{}' plugin --profile web add '{}'",
+        install.node.display(),
+        install.dsh_bin.display(),
+        tgz.display()
+    );
+    let mut cmd = Command::new("powershell.exe");
+    cmd.arg("-NoProfile")
+        .arg("-WindowStyle")
+        .arg("Hidden")
+        .arg("-Command")
+        .arg(cmdline);
     cmd.env("DSH_HOME", home);
     if let Some(bin) = ensure_pnpm_shim() {
         let sep = if cfg!(windows) { ";" } else { ":" };

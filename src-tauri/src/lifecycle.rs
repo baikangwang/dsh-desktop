@@ -20,6 +20,16 @@ pub async fn supervise(app: &AppHandle) -> Result<()> {
     // --- dsh install / update (long op: shows the progress window) ---
     let installed = dsh_manager::installed_version(&install);
     let mut target: Option<String> = None;
+    // A stale/missing cache means the startup check will hit the network
+    // (slow on a cold npm cache): surface the progress window up front.
+    if !dsh_manager::latest_cache_fresh() {
+        if let Some(w) = app.get_webview_window("main") {
+            let _ = w.show();
+        }
+        app.state::<AppState>()
+            .set_progress("checking", "正在检查 DSH 运行时…")
+            .await;
+    }
     if !install.is_present() {
         app.state::<AppState>()
             .set_status(RunState::Starting, Some("首次运行：安装 DSH 运行时…".into()))
