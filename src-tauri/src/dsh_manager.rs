@@ -1,8 +1,10 @@
-//! Locate / manage the DSH install in the private runtime prefix.
+//! Locate / run DSH via npx (npm exec) against a dedicated cache.
 //!
-//! The shell NEVER bundles DSH. On every startup it resolves the latest
-//! `@deepseek-ai/dsh` from the registry, checks plugin compatibility, and
-//! reinstalls the prefix when a newer compatible version exists.
+//! The shell NEVER bundles DSH. On startup it resolves the latest version
+//! (cached for 6h), gates upgrades on plugin compatibility, then spawns
+//!   node <npx-cli> --cache <dedicated> -y @deepseek-ai/dsh@<target> web …
+//! npx installs newer versions on demand (long op, streamed to the progress
+//! window) and reuses its cache otherwise (fast, no network).
 
 use crate::config;
 use anyhow::{anyhow, Context, Result};
@@ -14,27 +16,33 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
 /// Minimum dsh version the shell supports (interface contract C1–C3 + routes).
-/// This is a compatibility FLOOR, not a pin: the shell installs the latest
-/// registry version but refuses to run anything below this.
+/// This is a compatibility FLOOR: the shell runs the latest registry version
+/// but refuses to run anything below this.
 pub const MIN_DSH_VERSION: &str = "0.1.0-rc.6";
 
 // ---------------------------------------------------------------------------
 // Version helpers (semver-lite with prerelease support)
 // ---------------------------------------------------------------------------
 
-/// Read the installed `@deepseek-ai/dsh` version from its package.json.
-pub fn installed_version(install: &DshInstall) -> Option<String> {
-    let pkg = install
-        .prefix
-        .join("node_modules")
-        .join("@deepseek-ai")
-        .join("dsh")
-        .join("package.json");
-    let text = std::fs::read_to_string(pkg).ok()?;
+/// Version of the dsh the shell last ran successfully (state file).
+pub fn current_version() -> Option<String> {
+    let text = std::fs::read_to_string(current_version_path()).ok()?;
     let json: serde_json::Value = serde_json::from_str(&text).ok()?;
-    json.get("version")
-        .and_then(|v| v.as_str())
-        .map(str::to_owned)
+    json.get("version")?.as_str().map(str::to_owned)
+}
+
+/// Record the version we just booted, so the next startup knows the baseline.
+pub fn write_current_version(version: &str) {
+    let path = current_version_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let json = serde_json::json!({ "version": version });
+    let _ = std::fs::write(path, serde_json::to_string(&json).unwrap_or_default());
+}
+
+fn current_version_path() -> PathBuf {
+    config::data_dir().join("cache").join("dsh-current.json")
 }
 
 fn split_ver(s: &str) -> (Vec<u64>, Option<&str>) {
@@ -85,8 +93,7 @@ fn cmp_prerelease(a: &str, b: &str) -> Ordering {
     Ordering::Equal
 }
 
-/// Full semver-lite comparison: numeric core, then prerelease
-/// (release > any prerelease; numeric identifiers < alphanumeric).
+/// Full semver-lite comparison: numeric core, then prerelease.
 pub fn version_cmp(a: &str, b: &str) -> Ordering {
     let (a_core, a_pre) = split_ver(a);
     let (b_core, b_pre) = split_ver(b);
@@ -129,8 +136,7 @@ fn tilde_bounds(ver: &str) -> (String, String) {
     (ver.to_string(), format!("{}.{}.0-0", major, minor + 1))
 }
 
-/// Whether `version` satisfies an npm-style range string
-/// (space-separated `op version` tokens; ops `>= > <= < = ^ ~`).
+/// Whether `version` satisfies an npm-style range string.
 pub fn range_satisfied(version: &str, range: &str) -> bool {
     for token in range.split_whitespace() {
         let (op, ver) = if let Some(v) = token.strip_prefix(">=") {
@@ -174,19 +180,30 @@ pub fn range_satisfied(version: &str, range: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// npm registry helpers
+// Registry helpers (npm view via node, no console window)
 // ---------------------------------------------------------------------------
 
-/// Locate `npm-cli.js` next to the system Node runtime (used instead of
-/// `npm.cmd` so the shell can spawn node directly with no console window).
+fn find_on_path() -> Option<PathBuf> {
+    let exe = if cfg!(windows) { "node.exe" } else { "node" };
+    std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths)
+            .map(|dir| dir.join(exe))
+            .find(|p| p.is_file())
+    })
+}
+
 fn npm_cli_path() -> Option<PathBuf> {
     let node = find_on_path()?;
-    let cli = node.parent()?.join("node_modules").join("npm").join("bin").join("npm-cli.js");
+    let cli = node
+        .parent()?
+        .join("node_modules")
+        .join("npm")
+        .join("bin")
+        .join("npm-cli.js");
     cli.is_file().then_some(cli)
 }
 
 /// Run `npm view <args> --json` with a timeout. None on failure (offline etc.).
-/// Uses `node <npm-cli.js>` with CREATE_NO_WINDOW so no console window pops.
 async fn npm_view(args: &[&str]) -> Option<String> {
     let node = find_on_path()?;
     let cli = npm_cli_path()?;
@@ -211,8 +228,8 @@ async fn npm_view(args: &[&str]) -> Option<String> {
     String::from_utf8(out.stdout).ok()
 }
 
-/// TTL for the cached "latest dsh version" lookup, so most startups do not
-/// touch the network at all.
+/// TTL for the cached "latest dsh version" lookup, so most startups never
+/// touch the network.
 const LATEST_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(6 * 3600);
 
 fn latest_cache_path() -> PathBuf {
@@ -220,8 +237,7 @@ fn latest_cache_path() -> PathBuf {
 }
 
 fn read_latest_cache() -> Option<String> {
-    let path = latest_cache_path();
-    let text = std::fs::read_to_string(path).ok()?;
+    let text = std::fs::read_to_string(latest_cache_path()).ok()?;
     let json: serde_json::Value = serde_json::from_str(&text).ok()?;
     let age = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -247,14 +263,12 @@ fn write_latest_cache(version: &str) {
     let _ = std::fs::write(path, serde_json::to_string(&json).unwrap_or_default());
 }
 
-/// Whether a fresh "latest version" cache exists (so the startup check will
-/// be instant and touch no network).
+/// Whether a fresh "latest version" cache exists (startup check is instant).
 pub fn latest_cache_fresh() -> bool {
     read_latest_cache().is_some()
 }
 
-/// Latest `@deepseek-ai/dsh` version on the registry (cached for
-/// `LATEST_CACHE_TTL`); falls back to the stale cache when offline.
+/// Latest `@deepseek-ai/dsh` version on the registry (cached; stale fallback).
 pub async fn latest_dsh_version() -> Option<String> {
     if let Some(cached) = read_latest_cache() {
         return Some(cached);
@@ -291,7 +305,6 @@ pub async fn resolve_version(pkg: &str, range: &str) -> Option<String> {
 
 /// Plugins in the shared web profile whose `@deepseek-ai/*` peerDependencies
 /// would NOT be satisfied by the subpackage versions `dsh@<version>` provides.
-/// Returns human-readable incompatibility descriptions.
 pub async fn plugin_incompatibilities(
     home: &Path,
     dsh_deps: &HashMap<String, String>,
@@ -301,7 +314,6 @@ pub async fn plugin_incompatibilities(
     let Ok(entries) = std::fs::read_dir(&web_nm) else {
         return out;
     };
-    // Cache the resolved subpackage version per dependency name.
     let mut provided: HashMap<String, String> = HashMap::new();
     for entry in entries.flatten() {
         let pkg_json = entry.path().join("package.json");
@@ -329,7 +341,7 @@ pub async fn plugin_incompatibilities(
                 Some(v) => v.clone(),
                 None => {
                     let Some(v) = resolve_version(dep, dsh_range).await else {
-                        continue; // registry unreachable: cannot judge -> skip
+                        continue;
                     };
                     provided.insert(dep.clone(), v.clone());
                     v
@@ -347,53 +359,61 @@ pub async fn plugin_incompatibilities(
 }
 
 // ---------------------------------------------------------------------------
-// DshInstall
+// DshInstall (npx-based execution)
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 pub struct DshInstall {
-    /// Node binary used to run dsh (bundled runtime node, else system node).
+    /// Node binary used to drive npm/npx.
     pub node: PathBuf,
-    /// `.../node_modules/@deepseek-ai/dsh/lib/bin.js`.
-    pub dsh_bin: PathBuf,
-    /// Private prefix that owns `node_modules`.
-    pub prefix: PathBuf,
+    /// `node_modules/npm/bin/npx-cli.js` next to node.
+    pub npx_cli: PathBuf,
+    /// Dedicated npx cache (keeps the dsh install isolated and cleanable).
+    pub npx_cache: PathBuf,
 }
 
 impl DshInstall {
     pub fn resolve() -> Result<Self> {
-        let prefix = config::runtime_dir();
-        let node = bundled_node(&prefix).or_else(find_on_path).ok_or_else(|| {
-            anyhow!("no Node.js runtime found (bundled or on PATH)")
-        })?;
-        let dsh_bin = prefix
+        let node = find_on_path()
+            .ok_or_else(|| anyhow!("no Node.js runtime found (on PATH)"))?;
+        let npx_cli = node
+            .parent()
+            .ok_or_else(|| anyhow!("cannot locate node directory"))?
             .join("node_modules")
-            .join("@deepseek-ai")
-            .join("dsh")
-            .join("lib")
-            .join("bin.js");
-        Ok(Self { node, dsh_bin, prefix })
+            .join("npm")
+            .join("bin")
+            .join("npx-cli.js");
+        if !npx_cli.is_file() {
+            return Err(anyhow!(
+                "npx-cli.js not found next to {}",
+                node.display()
+            ));
+        }
+        let npx_cache = config::data_dir().join("npx-cache");
+        Ok(Self {
+            node,
+            npx_cli,
+            npx_cache,
+        })
     }
 
-    pub fn is_present(&self) -> bool {
-        self.dsh_bin.exists()
-    }
-
-    /// Build the `dsh web ...` command with the environment contract.
+    /// Build the `dsh web` command via npx:
+    /// `node <npx-cli> --cache <cache> -y @deepseek-ai/dsh@<version> web --patch … --port N`
     ///
-    /// `--patch` must precede the web app's passthrough flags (`--port` etc.):
-    /// the `web` subcommand stops parsing options at the first positional /
-    /// passthrough argument, so a `--patch` after `--port` would be handed to
-    /// the web app's own parser and rejected.
-    pub fn command(&self, port: u16, token: &str, config: &config::Config) -> Command {
+    /// npx installs `<version>` into its cache on first use (long op, output
+    /// streamed) and reuses it afterwards (fast, no network).
+    pub fn command(&self, version: &str, port: u16, token: &str, config: &config::Config) -> Command {
         let mut cmd = Command::new(&self.node);
         #[cfg(windows)]
         {
-            // The shell is a GUI app (no console in release); without this the
-            // console-subsystem node child would pop its own console window.
             cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
         }
-        cmd.arg(&self.dsh_bin).arg("web");
+        cmd.arg(&self.npx_cli)
+            .arg("--cache")
+            .arg(&self.npx_cache)
+            .arg("-y")
+            .arg(format!("@deepseek-ai/dsh@{version}"))
+            .arg("web");
         if let Some(patch) = ops_patch_path() {
             cmd.arg("--patch").arg(patch);
         }
@@ -415,81 +435,6 @@ impl DshInstall {
             cmd.env("PATH", format!("{extra}{sep}{current}"));
         }
         cmd
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Install / update
-// ---------------------------------------------------------------------------
-
-/// Install (or update) `@deepseek-ai/dsh@<version>` into the private prefix by
-/// running the bundled `scripts/ensure-dsh.ps1`. Streams the installer's
-/// stdout/stderr line by line to `lines`.
-pub async fn ensure_dsh(
-    install: &DshInstall,
-    version: &str,
-    lines: tokio::sync::mpsc::UnboundedSender<String>,
-) -> Result<()> {
-    let script = script_path("ensure-dsh.ps1")?;
-    let node = bundled_node(&install.prefix)
-        .or_else(find_on_path)
-        .ok_or_else(|| anyhow!("no Node.js runtime found to run the installer"))?;
-    let mut cmd = Command::new("powershell.exe");
-    // -WindowStyle Hidden gives powershell a HIDDEN console (no CREATE_NO_WINDOW:
-    // with no console at all, every console-subsystem child — npm, node, script
-    // powershells — would create its own visible window). Children inherit the
-    // hidden console, so the whole install tree stays silent.
-    let mut child = cmd
-        .arg("-NoProfile")
-        .arg("-WindowStyle")
-        .arg("Hidden")
-        .arg("-ExecutionPolicy")
-        .arg("Bypass")
-        .arg("-File")
-        .arg(&script)
-        .arg("-RuntimeDir")
-        .arg(&install.prefix)
-        .arg("-DshVersion")
-        .arg(version)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("failed to launch ensure-dsh.ps1")?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| anyhow!("no stdout pipe"))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| anyhow!("no stderr pipe"))?;
-    let out_lines = tokio::spawn(drain_lines(stdout, lines.clone()));
-    let err_lines = tokio::spawn(drain_lines(stderr, lines));
-    let status = child.wait().await.context("ensure-dsh.ps1 wait failed")?;
-    let _ = out_lines.await;
-    let _ = err_lines.await;
-    if !status.success() {
-        return Err(anyhow!("ensure-dsh.ps1 exited with {status}"));
-    }
-    if !install.is_present() {
-        return Err(anyhow!(
-            "dsh still missing after install; check {}",
-            install.dsh_bin.display()
-        ));
-    }
-    let _ = node; // reserved for future flags
-    Ok(())
-}
-
-async fn drain_lines<R: tokio::io::AsyncRead + Unpin>(
-    r: R,
-    lines: tokio::sync::mpsc::UnboundedSender<String>,
-) {
-    let mut reader = BufReader::new(r).lines();
-    while let Ok(Some(line)) = reader.next_line().await {
-        if lines.send(line).is_err() {
-            break;
-        }
     }
 }
 
@@ -519,8 +464,7 @@ fn find_corepack() -> Option<PathBuf> {
     })
 }
 
-/// Ensure the web profile's loader mounts `pkg_name` via `cordis.patch.yml`
-/// (an `insert` entry). Idempotent: skips when the name is already present.
+/// Ensure the web profile's loader mounts `pkg_name` via `cordis.patch.yml`.
 pub fn ensure_loader_entry(home: &Path, pkg_name: &str) -> Result<()> {
     let patch = home.join("profiles").join("web").join("cordis.patch.yml");
     let content = std::fs::read_to_string(&patch).unwrap_or_default();
@@ -545,20 +489,20 @@ pub fn ensure_loader_entry(home: &Path, pkg_name: &str) -> Result<()> {
 
 /// Install a local plugin tarball into the web profile via
 /// `dsh plugin --profile web add <tgz>`, then ensure its loader entry.
-/// Returns the installed package name. Streams CLI output to `lines`.
+/// Runs the dsh CLI through npx (pinned to the current version) under a
+/// hidden-console powershell so the whole pnpm/cmd chain stays windowless.
 pub async fn install_plugin_tarball(
     install: &DshInstall,
     home: &Path,
     tgz: &Path,
     lines: tokio::sync::mpsc::UnboundedSender<String>,
 ) -> Result<String> {
-    // Run through a hidden-console powershell so `dsh plugin`'s internal
-    // `pnpm` (pnpm.cmd -> cmd.exe) inherits the hidden console instead of
-    // popping its own window.
+    let version = current_version().unwrap_or_else(|| "latest".to_string());
     let cmdline = format!(
-        "& '{}' '{}' plugin --profile web add '{}'",
+        "& '{}' '{}' --cache '{}' -y '@deepseek-ai/dsh@{version}' plugin --profile web add '{}'",
         install.node.display(),
-        install.dsh_bin.display(),
+        install.npx_cli.display(),
+        install.npx_cache.display(),
         tgz.display()
     );
     let mut cmd = Command::new("powershell.exe");
@@ -621,14 +565,27 @@ fn profile_package_for_tarball(home: &Path, tgz: &Path) -> Result<String> {
     )
 }
 
+async fn drain_lines<R: tokio::io::AsyncRead + Unpin>(
+    r: R,
+    lines: tokio::sync::mpsc::UnboundedSender<String>,
+) {
+    let mut reader = BufReader::new(r).lines();
+    while let Ok(Some(line)) = reader.next_line().await {
+        if lines.send(line).is_err() {
+            break;
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Ops overlay + paths
 // ---------------------------------------------------------------------------
 
-/// Locate the `--patch` overlay that mounts the desktop ops routes
-/// (`@dsh-desktop/dsh-ops`: `/api/health` + `/api/admin/shutdown`).
-/// Installed layout: `<resource-dir>/scripts/web-surface.patch.yml`;
-/// dev layout: `<repo>/dsd-side/web-surface.patch.yml`.
+/// Locate the `--patch` overlay that mounts the desktop ops routes.
+///
+/// npm exec (npx) splits arguments at spaces, and the installed resource path
+/// lives under `%LOCALAPPDATA%\DeepSeek Harness\...` (has a space) — so the
+/// overlay is staged to a space-free shell data path before being passed.
 fn ops_patch_path() -> Option<PathBuf> {
     let mut candidates = Vec::new();
     if let Some(dir) = config::resource_dir() {
@@ -645,12 +602,19 @@ fn ops_patch_path() -> Option<PathBuf> {
             .join("dsd-side")
             .join("web-surface.patch.yml"),
     );
-    candidates.into_iter().find(|p| p.exists())
+    let src = candidates.into_iter().find(|p| p.exists())?;
+    let staged = config::data_dir().join("scripts").join("web-surface.patch.yml");
+    if let Some(parent) = staged.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if std::fs::copy(&src, &staged).is_ok() {
+        Some(staged)
+    } else {
+        Some(src)
+    }
 }
 
 /// Locate the checked-in `@dsh-desktop/dsh-ops` package source.
-/// Installed layout: `<resource-dir>/scripts/dsd-side/`;
-/// dev layout: `<repo>/dsd-side/`.
 fn ops_plugin_source() -> Option<PathBuf> {
     let mut candidates = Vec::new();
     if let Some(dir) = config::resource_dir() {
@@ -672,10 +636,7 @@ fn ops_plugin_source() -> Option<PathBuf> {
 }
 
 /// Ensure the desktop ops overlay plugin (`@dsh-desktop/dsh-ops`) is
-/// resolvable from the web profile: the Cordis loader resolves inserted
-/// plugins from the profile directory (`<DSH_HOME>/profiles/web/…`, walking
-/// up to `<DSH_HOME>/profiles/node_modules`), NOT from the runtime prefix.
-/// Idempotent copy of the checked-in package.
+/// resolvable from the web profile.
 pub fn ensure_ops_overlay(home: &Path) -> Result<()> {
     let src = ops_plugin_source().ok_or_else(|| {
         anyhow!("dsd-side plugin source not found (dev: repo dsd-side/; installed: scripts/dsd-side/)")
@@ -697,44 +658,4 @@ pub fn ensure_ops_overlay(home: &Path) -> Result<()> {
 /// Fresh per-boot secret the shell passes to `/api/admin/shutdown`.
 pub fn fresh_token() -> String {
     uuid::Uuid::new_v4().simple().to_string()
-}
-
-fn bundled_node(prefix: &Path) -> Option<PathBuf> {
-    let p = prefix.join("node.exe");
-    p.exists().then_some(p)
-}
-
-fn find_on_path() -> Option<PathBuf> {
-    let exe = if cfg!(windows) { "node.exe" } else { "node" };
-    std::env::var_os("PATH").and_then(|paths| {
-        std::env::split_paths(&paths)
-            .map(|dir| dir.join(exe))
-            .find(|p| p.is_file())
-    })
-}
-
-fn script_path(name: &str) -> Result<PathBuf> {
-    // Production layout: bundled resources at <resource-dir>/scripts/<name>.
-    if let Some(dir) = config::resource_dir() {
-        let candidate = dir.join("scripts").join(name);
-        if candidate.exists() {
-            return Ok(candidate);
-        }
-    }
-    let exe = std::env::current_exe()?;
-    let root = exe
-        .parent()
-        .and_then(|p| p.parent())
-        .ok_or_else(|| anyhow!("cannot locate install root"))?;
-    let candidate = root.join("scripts").join(name);
-    if candidate.exists() {
-        Ok(candidate)
-    } else {
-        // Dev layout: repo root/scripts/<name>
-        Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .join("scripts")
-            .join(name))
-    }
 }

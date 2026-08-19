@@ -32,7 +32,6 @@
       "icons/icon.png"
     ],
     "resources": {
-      "../scripts/ensure-dsh.ps1": "scripts/ensure-dsh.ps1",
       "../dsd-side/index.js": "scripts/dsd-side/index.js",
       "../dsd-side/package.json": "scripts/dsd-side/package.json",
       "../dsd-side/web-surface.patch.yml": "scripts/web-surface.patch.yml"

@@ -1,8 +1,8 @@
-//! Spawn `dsh web` and resolve its port from the printed URL line.
+//! Spawn `dsh web` (via npx) and resolve its port from the printed URL line.
 
 use crate::config;
-use crate::dsh_manager::DshInstall;
 use crate::config::Config;
+use crate::dsh_manager::DshInstall;
 use anyhow::{anyhow, Context, Result};
 use regex::Regex;
 use std::process::Stdio;
@@ -24,8 +24,17 @@ fn url_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"dsh web:\s+(http://127\.0\.0\.1:(\d+))").unwrap())
 }
 
-pub async fn spawn(install: &DshInstall, config: &Config, token: &str) -> Result<SpawnedServer> {
-    let mut cmd = install.command(config.port, token, config);
+/// Spawn `dsh web` at `version` via npx. Every stdout/stderr line is also
+/// forwarded to `progress` (used to surface npx's install output on the
+/// progress window during an install/update; None on the fast path).
+pub async fn spawn(
+    install: &DshInstall,
+    version: &str,
+    config: &Config,
+    token: &str,
+    progress: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+) -> Result<SpawnedServer> {
+    let mut cmd = install.command(version, config.port, token, config);
     cmd.stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
@@ -35,10 +44,10 @@ pub async fn spawn(install: &DshInstall, config: &Config, token: &str) -> Result
     let stdout = child.stdout.take().ok_or_else(|| anyhow!("no stdout pipe"))?;
     let stderr = child.stderr.take().ok_or_else(|| anyhow!("no stderr pipe"))?;
 
-    // Drain stderr to the log for post-mortem diagnosis (fire-and-forget).
-    tokio::spawn(drain_stderr(stderr));
+    tokio::spawn(drain_stderr(stderr, progress.clone()));
 
-    let port = read_port_from_stdout(stdout, Duration::from_secs(config.ready_timeout_secs)).await?;
+    let port = read_port_from_stdout(stdout, Duration::from_secs(config.ready_timeout_secs), progress)
+        .await?;
 
     Ok(SpawnedServer {
         url: format!("http://127.0.0.1:{port}"),
@@ -50,6 +59,7 @@ pub async fn spawn(install: &DshInstall, config: &Config, token: &str) -> Result
 async fn read_port_from_stdout(
     stdout: tokio::process::ChildStdout,
     timeout: Duration,
+    progress: Option<tokio::sync::mpsc::UnboundedSender<String>>,
 ) -> Result<u16> {
     let mut lines = BufReader::new(stdout).lines();
     let deadline = tokio::time::Instant::now() + timeout;
@@ -72,10 +82,16 @@ async fn read_port_from_stdout(
                 .context("bad port in URL line");
         }
         tracing::debug!("dsh web: {line}");
+        if let Some(tx) = &progress {
+            let _ = tx.send(line);
+        }
     }
 }
 
-async fn drain_stderr(stderr: tokio::process::ChildStderr) {
+async fn drain_stderr(
+    stderr: tokio::process::ChildStderr,
+    progress: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+) {
     use std::io::Write;
     let path = config::dsh_log_file();
     // Ensure the logs dir exists (OpenOptions::create only creates the file).
@@ -91,5 +107,8 @@ async fn drain_stderr(stderr: tokio::process::ChildStderr) {
             .append(true)
             .open(&path)
             .and_then(|mut f| writeln!(f, "{line}"));
+        if let Some(tx) = &progress {
+            let _ = tx.send(line);
+        }
     }
 }

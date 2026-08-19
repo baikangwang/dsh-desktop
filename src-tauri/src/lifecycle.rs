@@ -17,9 +17,15 @@ pub async fn supervise(app: &AppHandle) -> Result<()> {
     let token = app.state::<AppState>().shutdown_token.clone();
     let home = config::resolve_home(&config);
 
-    // --- dsh install / update (long op: shows the progress window) ---
-    let installed = dsh_manager::installed_version(&install);
+    // Clean up dsh web processes orphaned by a force-killed previous instance
+    // (our npx cache path or npm-spec invocation only — never the web version's
+    // own npx-installed dsh).
+    cleanup_orphan_dsh_web().await;
+
+    // --- Decide the dsh version to run (cached latest + compat gate) ---
+    let current = dsh_manager::current_version();
     let mut target: Option<String> = None;
+    let mut installing = false;
     // A stale/missing cache means the startup check will hit the network
     // (slow on a cold npm cache): surface the progress window up front.
     if !dsh_manager::latest_cache_fresh() {
@@ -30,24 +36,20 @@ pub async fn supervise(app: &AppHandle) -> Result<()> {
             .set_progress("checking", "正在检查 DSH 运行时…")
             .await;
     }
-    if !install.is_present() {
-        app.state::<AppState>()
-            .set_status(RunState::Starting, Some("首次运行：安装 DSH 运行时…".into()))
-            .await;
-        app.state::<AppState>()
-            .set_progress("installing-dsh", "首次运行：安装 DSH 运行时…")
-            .await;
-        match dsh_manager::latest_dsh_version().await {
-            Some(v) => target = Some(v),
+    match dsh_manager::latest_dsh_version().await {
+        Some(latest) => match &current {
             None => {
-                return Err(anyhow!(
-                    "无法连接 npm registry，且本机没有已安装的 DSH 运行时（首次运行需要网络）"
-                ));
+                // First run: must install (network required).
+                target = Some(latest.clone());
+                installing = true;
+                app.state::<AppState>()
+                    .set_status(RunState::Starting, Some(format!("首次运行：安装 DSH {latest}…").into()))
+                    .await;
+                app.state::<AppState>()
+                    .set_progress("installing-dsh", format!("首次运行：安装 DSH {latest}…"))
+                    .await;
             }
-        }
-    } else if let Some(current) = &installed {
-        if let Some(latest) = dsh_manager::latest_dsh_version().await {
-            if latest != *current {
+            Some(cur) if *cur != latest => {
                 // Plugin-compatibility gate (R1): only upgrade when every
                 // profile plugin's @deepseek-ai/* peerDeps stay satisfied.
                 let deps = dsh_manager::dsh_dependencies(&latest).await;
@@ -60,11 +62,12 @@ pub async fn supervise(app: &AppHandle) -> Result<()> {
                 };
                 if bad.is_empty() && deps.is_some() {
                     target = Some(latest.clone());
+                    installing = true;
                     app.state::<AppState>()
-                        .set_status(RunState::Starting, Some(format!("正在更新 DSH {current} → {latest}…").into()))
+                        .set_status(RunState::Starting, Some(format!("正在更新 DSH {cur} → {latest}…").into()))
                         .await;
                     app.state::<AppState>()
-                        .set_progress("updating-dsh", format!("正在更新 DSH {current} → {latest}…"))
+                        .set_progress("updating-dsh", format!("正在更新 DSH {cur} → {latest}…"))
                         .await;
                 } else if !bad.is_empty() {
                     tracing::warn!("skip dsh upgrade to {latest}: {}", bad.join("; "));
@@ -76,12 +79,40 @@ pub async fn supervise(app: &AppHandle) -> Result<()> {
                     }
                 }
             }
+            _ => {} // already on latest
+        },
+        None => {
+            // Registry unreachable: stay on the current version; without any
+            // recorded version the first run cannot proceed offline.
+            if current.is_none() {
+                return Err(anyhow!(
+                    "无法连接 npm registry，且本机没有可用的 DSH 运行时（首次运行需要网络）"
+                ));
+            }
         }
-        // registry unreachable: stay on the installed version (offline path)
     }
 
-    if let Some(version) = target {
-        // Long install: surface the progress window (splash page) and stream.
+    let version = target.clone().unwrap_or_else(|| current.clone().unwrap_or_default());
+
+    // Version gate: refuse to drive a dsh older than the contract floor
+    // (docs/INTERFACE_CONTRACT.md §6) instead of misparsing its output.
+    if !dsh_manager::version_at_least(&version, dsh_manager::MIN_DSH_VERSION) {
+        return Err(anyhow!(
+            "dsh 版本过低：需要 ≥ {}，当前 {}（请升级 dsh）",
+            dsh_manager::MIN_DSH_VERSION,
+            version
+        ));
+    }
+    tracing::info!("dsh version {version} (min {})", dsh_manager::MIN_DSH_VERSION);
+
+    // Ensure the ops overlay (`/api/health` + `/api/admin/shutdown`) is
+    // resolvable from the web profile before spawning.
+    if let Err(e) = dsh_manager::ensure_ops_overlay(&home) {
+        tracing::warn!("ops overlay install failed; graceful shutdown will fall back to hard kill: {e:#}");
+    }
+
+    // Progress sink: during an install/update, surface npx's streamed output.
+    let progress_tx = if installing {
         if let Some(w) = app.get_webview_window("main") {
             let _ = w.show();
         }
@@ -92,38 +123,10 @@ pub async fn supervise(app: &AppHandle) -> Result<()> {
                 handle.state::<AppState>().push_progress_line(line).await;
             }
         });
-        if let Err(e) = dsh_manager::ensure_dsh(&install, &version, tx).await {
-            let msg = format!("DSH 运行时安装失败: {e:#}");
-            app.state::<AppState>()
-                .set_status(RunState::Error, Some(msg.clone()))
-                .await;
-            return Err(anyhow!(msg));
-        }
-        app.state::<AppState>()
-            .push_progress_line(format!("DSH 运行时就绪 (@deepseek-ai/dsh@{version})"))
-            .await;
-        app.state::<AppState>()
-            .set_progress("ready", "DSH 运行时就绪")
-            .await;
-    }
-
-    // Version gate: refuse to drive a dsh older than the contract floor
-    // (docs/INTERFACE_CONTRACT.md §6) instead of misparsing its output.
-    let installed_ver = dsh_manager::installed_version(&install).unwrap_or_default();
-    if !dsh_manager::version_at_least(&installed_ver, dsh_manager::MIN_DSH_VERSION) {
-        return Err(anyhow!(
-            "dsh 版本过低：需要 ≥ {}，当前 {}（请运行 scripts/ensure-dsh.ps1 升级）",
-            dsh_manager::MIN_DSH_VERSION,
-            installed_ver
-        ));
-    }
-    tracing::info!("dsh version {installed_ver} (min {})", dsh_manager::MIN_DSH_VERSION);
-
-    // Ensure the ops overlay (`/api/health` + `/api/admin/shutdown`) is
-    // resolvable from the web profile before spawning.
-    if let Err(e) = dsh_manager::ensure_ops_overlay(&home) {
-        tracing::warn!("ops overlay install failed; graceful shutdown will fall back to hard kill: {e:#}");
-    }
+        Some(tx)
+    } else {
+        None
+    };
 
     let mut attempt: u32 = 0;
     loop {
@@ -135,7 +138,15 @@ pub async fn supervise(app: &AppHandle) -> Result<()> {
             .set_status(RunState::Starting, Some("正在启动 dsh web…".into()))
             .await;
 
-        let server = match process_supervisor::spawn(&install, &config, &token).await {
+        let server = match process_supervisor::spawn(
+            &install,
+            &version,
+            &config,
+            &token,
+            progress_tx.clone(),
+        )
+        .await
+        {
             Ok(s) => s,
             Err(e) => {
                 attempt += 1;
@@ -162,6 +173,9 @@ pub async fn supervise(app: &AppHandle) -> Result<()> {
             backoff(attempt).await;
             continue;
         }
+
+        // The booted version is the new baseline for the next startup.
+        dsh_manager::write_current_version(&version);
 
         if let Some(w) = app.get_webview_window("main") {
             let _ = w.navigate(url.parse::<tauri::Url>()?);
@@ -251,6 +265,26 @@ pub async fn shutdown(app: &AppHandle) {
 }
 
 /// Minimal HTTP POST (dependency-free) to the DSH-side shutdown endpoint.
+/// Kill `node` processes left over from a force-killed previous shell
+/// instance: any whose command line references our npx cache dir or the
+/// npm-spec invocation `@deepseek-ai/dsh@`. Runs windowless via a
+/// hidden-console powershell one-liner (never touches the web version's own
+/// npx-installed dsh, which lives under the npm-cache `_npx` path).
+async fn cleanup_orphan_dsh_web() {
+    let npx_cache = config::data_dir().join("npx-cache");
+    let ps = format!(
+        "Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | Where-Object {{ $_.CommandLine -match '{}' -or $_.CommandLine -match '@deepseek-ai/dsh@' }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }}",
+        npx_cache.display()
+    );
+    let mut cmd = Command::new("powershell.exe");
+    cmd.arg("-NoProfile")
+        .arg("-WindowStyle")
+        .arg("Hidden")
+        .arg("-Command")
+        .arg(ps);
+    let _ = cmd.status().await;
+}
+
 fn graceful_shutdown(port: u16, token: &str) -> bool {
     use std::io::{Read, Write};
     use std::net::TcpStream;
