@@ -70,22 +70,28 @@ npm run tauri -- dev    # 验证：spawn dsh web → 解析端口 → 健康就�
 - ✅ 日志滚动（10MiB / 3 代，`config::rotate_if_large`）+ `shell.log` 落盘
 - ✅ 修复 P1 编译错误（原仓库从未构建过）与日志目录缺失 bug；`Config::load` 容忍 BOM
 
-已推进（2026-08-17，提交 1a2cf45 / 56229a1 / 555e307）：
-- ✅ 生产打包：`bundle.resources` 把 `scripts/ensure-dsh.ps1`、`scripts/web-surface.patch.yml`、
-  `dsd-side/`（自定义插件）打进安装包；Rust 侧 `resource_dir()` 优先查找
-  （安装版布局 `<install-root>/scripts/...`）；已装包实测：安装版 dsh web 带 patch 启动，
-  `/api/health` 200
-- ✅ 自更新：`tauri-plugin-updater` 已启用 + minisign 密钥对已生成
-  （私钥 `%USERPROFILE%\.tauri\dsh-desktop.key`，密码 `dshdesktop-2026`，**勿入库**；
-  公钥在 tauri.conf.json `plugins.updater.pubkey`）；release 构建产出
-  `DeepSeek Harness_<ver>_x64-setup.exe` + `.sig`
-- ✅ `scripts/release.ps1`：对齐实际产物名，复用 tauri 产出的签名生成 latest.json
-  （`UPDATE_BASE_URL` 必填，`AUTHENTICODE_CERT` 可选）
+已推进（2026-08-19，提交 2724521）——按评审后的升级/插件模型重构：
 
-已知待办（P4）：
-- Authenticode 代码签名（需证书；release.ps1 已留 `AUTHENTICODE_CERT` 钩子）
-- CI 的 `TAURI_SIGNING_PRIVATE_KEY`/`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` secret
+**升级模型（评审确认）**
+- Shell：**离线包覆盖升级**（关闭 → 装新包 → 重启），无自动化；已移除 tauri-plugin-updater
+- dsh：**不打包**，启动时自动解析 npm 最新版并安装/更新（无 pin）；
+  升级前做**插件 peerDeps 兼容检查**（不满足则跳过升级停在当前版）；
+  安装/更新是长时操作 → **splash 进度窗体**（流式输出，完成后自动进 dsh UI）
+- 插件：**本地离线包（.tgz）按需安装**——托盘"安装插件…"→ 选包 →
+  `dsh plugin --profile web add`（corepack pnpm shim）→ 确保 `cordis.patch.yml`
+  loader entry → 重启 dsh；升级 = 新包覆盖 + 重启
+
+**已验证（2026-08-19 实机）**
+- ✅ 启动自动升级 dsh rc.6 → rc.7（进度窗体流程，7 分钟，兼容门放行）
+- ✅ rc.7 下 `/api/health` 200 + `dsh-ide-ui` 正常加载
+- ✅ pnpm shim（corepack 11.7.0）+ `dsh plugin add <tgz>` 幂等重装
+- ✅ 共享 profile：web/桌面双端同挂 ide-ui；会话/工作区零迁移
+
+**待办（P5）**
+- Authenticode 代码签名（需证书；release.ps1 留 `AUTHENTICODE_CERT` 钩子）
+- 插件"卸载"（v1 只做安装/升级；卸载可手动删 profile 配置）
 - 待评估：config 界面 / 状态展示细节是否齐全
+
 
 ## Phase 3 — CI / 发布
 
