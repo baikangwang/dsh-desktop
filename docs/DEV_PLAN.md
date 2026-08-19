@@ -72,20 +72,21 @@ npm run tauri -- dev    # 验证：spawn dsh web → 解析端口 → 健康就�
 
 已推进（2026-08-19，提交 2724521）——按评审后的升级/插件模型重构：
 
-**升级模型（评审确认）**
-- Shell：**离线包覆盖升级**（关闭 → 装新包 → 重启），无自动化；已移除 tauri-plugin-updater
-- dsh：**不打包**，启动时自动解析 npm 最新版并安装/更新（无 pin）；
-  升级前做**插件 peerDeps 兼容检查**（不满足则跳过升级停在当前版）；
-  安装/更新是长时操作 → **splash 进度窗体**（流式输出，完成后自动进 dsh UI）
+**升级模型（2026-08-20 复审后调整，提交 6ec56d2）**
+- Shell：**离线包覆盖升级**（关闭 → 装新包 → 重启），无自动化
+- dsh：**npx 执行 + 专属缓存**（`%LOCALAPPDATA%\DshDesktop\npx-cache`）：
+  shell 自己决策目标版本（6h 缓存 latest + 插件 peerDeps 兼容门），
+  再 `node npx-cli --cache … -y @deepseek-ai/dsh@<目标> web …`——
+  npx 负责"装新版/复用缓存/运行"；每次成功启动把版本写入状态文件
+  （`cache/dsh-current.json`）；已删除 ensure-dsh.ps1 与私有 runtime 前缀
+  - ⚠️ npm exec 会把含空格的参数截断 → `--patch` 暂存到无空格路径
+  - 启动清理被强杀残留的孤儿 dsh web 进程
 - 插件：**本地离线包（.tgz）按需安装**——托盘"安装插件…"→ 选包 →
-  `dsh plugin --profile web add`（corepack pnpm shim）→ 确保 `cordis.patch.yml`
-  loader entry → 重启 dsh；升级 = 新包覆盖 + 重启
+  `dsh plugin --profile web add`（corepack pnpm shim）→ 确保 loader entry → 重启 dsh
 
-**已验证（2026-08-19 实机）**
-- ✅ 启动自动升级 dsh rc.6 → rc.7（进度窗体流程，7 分钟，兼容门放行）
-- ✅ rc.7 下 `/api/health` 200 + `dsh-ide-ui` 正常加载
-- ✅ pnpm shim（corepack 11.7.0）+ `dsh plugin add <tgz>` 幂等重装
-- ✅ 共享 profile：web/桌面双端同挂 ide-ui；会话/工作区零迁移
+**已验证（实机）**
+- ✅ 干净启动 19s 到就绪（版本判定 2.2s 零网络 + npx 缓存命中 + dsh boot），无弹窗、无崩溃循环
+- ✅ dsh rc.6 → rc.7 自动升级（进度窗体）；`/api/health` 200 + `dsh-ide-ui` 加载
 
 **待办（P5）**
 - Authenticode 代码签名（需证书；release.ps1 留 `AUTHENTICODE_CERT` 钩子）
