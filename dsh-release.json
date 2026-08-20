@@ -1,0 +1,12 @@
+{
+  "kind": "tauri",
+  "packageDir": ".",
+  "packageName": "dsh-desktop",
+  "versionFile": "src-tauri/tauri.conf.json",
+  "tagPrefix": "v",
+  "offline": false,
+  "typecheck": "",
+  "build": "npm run tauri -- build",
+  "npm": false,
+  "pnpmVersion": 11
+}

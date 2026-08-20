@@ -3,53 +3,56 @@
 ## 1. 目录布局（Windows，每用户免管理员）
 
 ```
-%LOCALAPPDATA%\Programs\DshDesktop\        # 安装根（NSIS currentUser）
-├── DshDesktop.exe
-├── resources\  scripts\                   # 资源 + ensure-dsh.ps1 等
-├── runtime\
-│   ├── node.exe                           # 捆绑 Node LTS（安装器带入）
-│   └── node_modules\@deepseek-ai\dsh\     # 私有 prefix（首启 npm 安装，可版本化）
-└── WebView2\                              # Evergreen bootstrapper（Win10 缺失时）
+%LOCALAPPDATA%\DeepSeek Harness\          # 安装根（NSIS currentUser，productName）
+├── dsh-desktop.exe
+└── scripts\                             # 打包资源：web-surface.patch.yml + dsd-side/（ops overlay）
 
-%LOCALAPPDATA%\DshDesktop\                 # 运行数据
+%LOCALAPPDATA%\DshDesktop\               # 运行数据（data dir，无空格路径）
 ├── logs\{dsh-web.log, shell.log}
 ├── config.json
-└── updates\                               # 壳更新暂存
+├── cache\{dsh-current.json, dsh-latest.json}   # 版本状态与 latest 缓存
+├── npx-cache\                           # dsh 专属 npx 缓存（_npx\<hash>\node_modules\@deepseek-ai\dsh）
+├── scripts\web-surface.patch.yml        # 无空格暂存（npm exec 会把含空格参数截断）
+├── bin\pnpm.cmd                         # corepack pnpm shim（插件安装用）
+└── plugins\                             # 本地插件包暂存
 
-%USERPROFILE%\.dsh\                        # DSH_HOME（沿用，零迁移）
+%USERPROFILE%\.dsh\                      # DSH_HOME（共享，web/桌面零迁移）
+└── profiles\web\                        # web profile：bundle + 用户补丁层 + node_modules（含插件）
 ```
 
 ## 2. 安装流程
 
-1. NSIS per-user 安装器：落盘壳 + 捆绑 Node + 校验 WebView2（缺失则装 bootstrapper）+ 写快捷方式/卸载器。
-2. 首启：`ensure-dsh.ps1` 用捆绑 npm 把 `@deepseek-ai/dsh@<pin>` 装入私有 prefix（进度态）。
-3. spawn `dsh web --port 0` → 解析 URL → 健康探测 → 导航 → 显示窗口。
+1. NSIS per-user 安装器：落盘壳 + resources（scripts/ + dsd-side/）+ 快捷方式/卸载器。
+2. 首启：版本决策（6h 缓存 latest，冷缓存走网络）→ `node npx-cli --cache <DshDesktop\npx-cache> -y @deepseek-ai/dsh@<latest> web …`
+   ——npx 首次安装（进度窗呈现，分钟级），之后缓存命中秒起。
+3. spawn `dsh web --port 0` → 解析 URL → 健康探测 → 导航 → 显示窗口；成功启动后写 `cache/dsh-current.json`。
 
-## 3. 升级（两条独立通道，互斥）
+## 3. 升级
 
-- **壳升级**（P2，`tauri-plugin-updater`）：查 `latest.json` → 下载到 `updates\` 暂存 → minisign 验签 → **退出时由 NSIS 静默替换并重启**（"install-and-relaunch"）。Windows 运行中 exe 被锁，故「热」= 运行中后台下载 + 退出时秒级切换。
-- **dsh 升级**：停子进程 → 装新版本到 `runtime\dsh-<ver>\` → 翻转 junction `runtime\dsh` → 重启。**版本化目录 + 原子切换**保证可回滚、绝不覆盖运行中文件。
+- **壳升级**：离线包覆盖——关闭应用 → 运行新版 NSIS 安装包 → 重启（无自动化）。
+- **dsh 升级**：**重启即更新**——每次启动解析 latest，更新且**插件 peerDeps 兼容**才升级
+  （npx 装新版进缓存，进度窗呈现；不兼容则停在当前版并记录）。
+- **插件升级**：托盘「安装插件…」选新 `.tgz` → `dsh plugin --profile web add`（覆盖同包名）→ 重启 dsh。
 
 ## 4. 回滚与安全
 
-- 保留上一版本目录 + `last-known-good`；新版本启动 N 秒内崩溃自动回退。
-- 传输 HTTPS + minisign + SHA256；应用走暂存区，绝不在运行时覆盖。
-- 壳升级失败不影响 dsh；dsh 升级失败翻回 junction。
+- dsh：旧版本仍在 npx 缓存/`dsh-current.json` 可回溯；升级被兼容门拦住不会破坏插件。
+- 优雅关停：`POST /api/admin/shutdown`（每进程 Bearer 密钥）→ dsh 干净退出；`taskkill` 兜底。
 
 ## 5. 子进程环境契约
 
 ```
-PATH     = <install>\runtime + 用户原 PATH        # 让 dsh 找到 git / pwsh / 代理
+PATH     = <DshDesktop\bin> + 用户原 PATH（corepack pnpm shim 供插件安装）
 DSH_HOME = %USERPROFILE%\.dsh（config 可覆盖）
 DSH_DESKTOP_SHUTDOWN_TOKEN = <每进程随机>          # 关停鉴权
 HTTP(S)_PROXY / NO_PROXY = 透传                    # 模型 API 走代理
-CWD      = %USERPROFILE%
 ```
 
 ## 6. 卸载
 
-优雅关停 `dsh web`（`taskkill` 兜底）→ 移除安装根与 `%LOCALAPPDATA%\DshDesktop\` → **默认保留 `~\.dsh`**（会话/凭证/设置）。
+优雅关停 `dsh web` → 移除安装根与 `%LOCALAPPDATA%\DshDesktop\`（含 npx-cache）→ **默认保留 `~\.dsh`**（会话/凭证/设置）。
 
 ## 7. 离线/内网变体
 
-默认首启需联网装 dsh；离线场景改为安装器内置预编译 `dsh node_modules` 压缩包，解压即用。
+默认首启需联网让 npx 安装 dsh；离线场景可将 `DshDesktop\npx-cache` 随安装器预置
+（或由管理员提前准备），首启即缓存命中免网络。

@@ -1,7 +1,7 @@
 # 开发计划与交接说明 (DEV_PLAN)
 
 > 交接来源：DSH 会话（原工作区 `D:\working\projects\dsh`），时间 2026-08-17。
-> 仓库已从 https://github.com/baikangwang/deepseek-harness-desktop.git clone 到本目录（master，干净，4 个提交，P1 骨架已完成）。
+> 仓库现址：https://github.com/baikangwang/dsh-desktop.git（原 `deepseek-harness-desktop` 迁移而来）。
 > 本文件是给新工作区会话的完整交接，先读本文件再动手。
 
 ## 项目定位
@@ -26,7 +26,7 @@ Tauri 2 (Rust + WebView2) 桌面壳，为 DeepSeek Harness Web GUI 提供 Window
 | Rust (rustc/cargo) | ❌ **未装，必须先装** |
 | MSVC C++ Build Tools (link.exe) | ❌ **未装，必须先装** |
 | Tauri CLI | 仓库内 `npm install` 后可用（`npm run tauri`）；图标已提交无需生成 |
-| DSH 运行时 | 未装；跑 `scripts/ensure-dsh.ps1` 安装 `@deepseek-ai/dsh@0.1.0-rc.6` 到私有前缀 |
+| DSH 运行时 | **不装不打包**：壳经 npx 自动解析/安装最新 `@deepseek-ai/dsh`（专属缓存 `%LOCALAPPDATA%\DshDesktop\npx-cache`） |
 
 ## Phase 0 — 环境搭建（一次性，本机）
 
@@ -35,18 +35,15 @@ Tauri 2 (Rust + WebView2) 桌面壳，为 DeepSeek Harness Web GUI 提供 Window
 winget install --id Rustlang.Rustup -e --source winget
 rustup default stable-x86_64-pc-windows-msvc   # 新开终端让 PATH 生效
 
-# 2. VS 2022 Build Tools（提供 link.exe，勾选"使用 C++ 的桌面开发"）
+# 2. VS 2022 Build Tools（提供 link.exe，勾选"使用 C++ 的桌面开发"）+ Windows 11 SDK（rc.exe）
 winget install --id Microsoft.VisualStudio.2022.BuildTools -e `
   --override "--add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --passive --wait --norestart"
 
 # 3. Tauri CLI（仓库根目录）
 npm install
-
-# 4. 安装固定版 dsh 到应用私有前缀
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\ensure-dsh.ps1
 ```
 
-> 现成一键脚本：`.\scripts\local-setup.ps1` 依次完成 1–3 并触发 `npm run tauri -- build`。
+> 现成一键脚本：`.\scripts\local-setup.ps1` 完成 1–3（dsh 运行时由应用首启自动经 npx 安装，无需手动）。
 
 ## Phase 1 — 构建验证
 
@@ -96,14 +93,17 @@ npm run tauri -- dev    # 验证：spawn dsh web → 解析端口 → 健康就�
 
 ## Phase 3 — CI / 发布
 
-- `.github/workflows/build-release.yml` 已就绪：
-  - push main/master 或 PR → 构建 NSIS + 上传 artifact
-  - tag `v*` → tauri-action 构建并发布 GitHub Release（P2 时接 `TAURI_SIGNING_PRIVATE_KEY` secret）
-- 本地推送：`scripts/push-to-github.ps1`（需 `$env:GITHUB_TOKEN`，用户已刷新 PAT 并写入本机 GCM）
+- `.github/workflows/build.yml`（push/PR 校验，手写）+ `release.yml`（`v*` tag 发布，由
+  `scripts/dsh-release.mjs` 按模板生成/覆盖）：
+  - push/PR → 构建 NSIS + 上传 artifact（校验可编译）
+  - tag `v*` → 版本断言 → `npm run tauri -- build` → NSIS 上传 GitHub Release（幂等 clobber）
+  - 详见 `docs/cicd.md`；发布用 `node scripts/dsh-release.mjs --dry-run` 预览后执行
+- 本地推送：`push-to-github.ps1`（需 `$env:GITHUB_TOKEN`，用户已刷新 PAT 并写入本机 GCM；仓库地址 `https://github.com/baikangwang/dsh-desktop`）
 
 ## 文档索引
 
 - `docs/ARCHITECTURE.md` — 架构设计（中文）：进程模型、关键机制表、性能/安全边界
 - `docs/DEPLOYMENT.md` — 安装/升级/目录布局设计
 - `docs/INTERFACE_CONTRACT.md` — DSH 侧 `/api/health` + `/api/admin/shutdown` 契约（`DSH_DESKTOP_SHUTDOWN_TOKEN` 保护）
+- `docs/cicd.md` — 打包/发布流程（对齐 DSH 插件生态多项目方案）
 - `dsd-side/` — DSH 侧插件包参考实现（挂载上述两个路由），含 `web-surface.patch.yml`

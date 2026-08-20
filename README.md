@@ -1,70 +1,101 @@
-# DeepSeek Harness Desktop (DshDesktop)
+# DSH｜dsh-desktop｜Tauri 2 桌面壳：托管 `dsh web`，让 DeepSeek Harness 以原生应用形态运行
 
-A professional desktop shell for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) Web GUI, built with **Tauri 2 (Rust + WebView2)**.
+> **非官方项目**，由社区成员独立开发和维护，与 DeepSeek 官方无关联。
+>
+> **Unofficial project**, independently developed and maintained by a community
+> member. Not affiliated with or endorsed by DeepSeek.
 
-It is a *thin host wrapper*, not a fork: it spawns the **installed** `dsh web` as a managed child process and loads the served URL in a WebView2 window. It adds what a browser cannot — a real app icon, single instance, tray status, close-to-tray, crash auto-restart, deploy/status observability, and (P2) signed self-update.
+**Project URL / 项目地址**: <https://github.com/baikangwang/dsh-desktop>
 
-## Core principle
+---
 
-> The shell **never bundles DSH**. It locates a pinned `dsh` install in a private prefix and spawns `dsh web`. DSH upgrades are therefore transparent, and every DSH client-plugin feature appears automatically (the WebView loads the same URL served by `dsh web`, which injects `window.__DSH_BOOT__`).
+## 简介 / Introduction
 
-## Repo layout
+**中文**：`dsh-desktop` 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
+Web 界面的桌面壳（Tauri 2 + Rust + WebView2）。它是**极薄的宿主包装器，不是 fork**：
+不打包 DSH，启动时通过 npx 解析并安装最新 `dsh web`，以受管子进程运行它，再把
+WebView 导航到其服务的 URL。补上了浏览器给不了的体验：独立应用图标、单实例、
+系统托盘、关窗驻留、崩溃自愈、优雅关停、本地插件安装。
 
-```
-ui/                      minimal static splash + offline pages
-scripts/
-  ensure-dsh.ps1         first-run: install pinned dsh into the private prefix
-  release.ps1            P2: build + sign + generate update manifest
-src-tauri/               Tauri 2 Rust backend
-  src/
-    app.rs               setup wiring (plugins, tray, single-instance, lifecycle)
-    process_supervisor.rs  spawn dsh web, parse port from stdout, watch exit
-    dsh_manager.rs       locate node/dsh, build env, version gate
-    health.rs            readiness / liveness probes
-    lifecycle.rs         state machine + restart/backoff strategy
-    tray.rs              tray icon + menu + status colors
-    commands.rs          WebView<->Rust IPC (status / restart / open logs / quit)
-    config.rs            config.json schema + load/save
-  tauri.conf.json        window / bundle(NSIS) / plugins
-  capabilities/default.json
-docs/
-  ARCHITECTURE.md        system/architecture/performance/maintainability design
-  DEPLOYMENT.md          install + upgrade + directory layout design
-  INTERFACE_CONTRACT.md  DSH-side /api/health + /api/admin/shutdown contract
-dsd-side/                reference DSH-side plugin package (mounts the two routes)
-```
+**English**: `dsh-desktop` is a thin desktop shell for the
+[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) Web GUI,
+built with Tauri 2 (Rust + WebView2). It never bundles DSH: on startup it
+resolves the latest `dsh web` via npx, manages it as a child process, and loads
+its URL in a WebView2 window — adding what a browser cannot: an app icon,
+single instance, system tray, close-to-tray, crash auto-restart, graceful
+shutdown, and local plugin installation.
 
-## Prerequisites
+### Screenshots / 截图
 
-- Windows 10 1809+ / Windows 11 (WebView2 Evergreen; the installer bundles the bootstrapper for Win10).
-- [Rust](https://rustup.rs) (stable, MSVC toolchain) + Node.js ≥ 20 (for the Tauri CLI only).
+（占位：启动进度窗、主界面、托盘菜单 —— 后续补充）
+*(Placeholder: splash/progress window, main UI, tray menu — to be added.)*
 
-## First build (one-time)
+---
+
+## 与 DSH 的集成方式 / How it integrates with DSH
+
+| 集成点 | 机制 |
+|---|---|
+| 运行 DSH | 启动时经 `npx @deepseek-ai/dsh@<latest>`（专属缓存）运行 `dsh web --port 0`，解析 stdout 端口 |
+| WebView 加载 | 导航到 `dsh web` 服务的 URL（`window.__DSH_BOOT__` 由 dsh web 注入——本壳不注入、不打包任何前端） |
+| 会话 / 工作区 / 插件 | 与浏览器版共享 `DSH_HOME`（`~/.dsh`）：零迁移，web 与桌面双端一致 |
+| 健康 / 优雅关停 | DSH 侧 ops overlay（`dsd-side/`）挂载 `/api/health` + `/api/admin/shutdown`（Bearer 每进程密钥） |
+| 插件 | 托盘「安装插件…」：选择本地 `.tgz` → `dsh plugin --profile web add` → 重启 dsh 生效（与 web 版同 profile） |
+
+### Requirements / 环境要求
+
+- Windows 10 1809+ / Windows 11（WebView2 Evergreen）
+- [Rust](https://rustup.rs) stable (MSVC) + VS 2022 Build Tools（含 Windows SDK）+ Node.js ≥ 20（构建期）
+
+### Build & Run / 构建与运行
 
 ```powershell
-# 1. install the Tauri CLI
 npm install
-
-# 2. generate icons from a 512x512 PNG (required before `tauri build`)
-npm run tauri -- icon ./assets/icon.png
-#    this creates src-tauri/icons/icon.ico, icon.png, ...
-
-# 3. dev run
-npm run tauri -- dev
-
-# 4. production build (NSIS per-user installer)
-npm run tauri -- build
+npm run tauri -- dev       # 开发运行
+npm run tauri -- build     # 构建 NSIS 安装包（per-user）
 ```
 
-## How it runs (P1)
+### Release / 发布
 
-1. `main.rs` (with `windows_subsystem="windows"`) launches with no console.
-2. `app::setup` loads `config.json`, resolves node + dsh, spawns `dsh web --port 0` hidden, parses the `dsh web: http://127.0.0.1:<port>` stdout line.
-3. `health::wait_ready` polls until the server answers, then navigates the WebView to the URL (the splash page shows until then).
-4. Tray icon reflects state (yellow starting / green ready / red error); closing the window keeps it in the tray.
+见 [`docs/cicd.md`](docs/cicd.md)：`node scripts/dsh-release.mjs --dry-run` 预览，
+确认后执行（自动打 `v*` tag → GitHub Actions 构建 → NSIS 产物挂到 GitHub Release）。
 
-See `docs/` for the full design and the DSH-side contract.
+---
 
-## Security note
+## 仓库结构 / Repo layout
 
-The `/api/admin/shutdown` route (DSH-side, see `dsd-side/`) is guarded by a per-boot secret passed via the `DSH_DESKTOP_SHUTDOWN_TOKEN` environment variable, so only the shell can gracefully stop its own child.
+```
+ui/                        splash / 安装进度 / 离线页
+scripts/
+  dsh-release.mjs          发布执行层（幂等：读版本 → tag → 生成 release workflow）
+  local-setup.ps1          一次性构建环境准备（Rust + MSVC + npm install）
+src-tauri/                 Tauri 2 Rust 后端
+  src/
+    app.rs                 setup 装配（插件、托盘、单实例、生命周期）
+    process_supervisor.rs  spawn dsh web、解析端口、监视退出
+    dsh_manager.rs         npx 执行、版本决策/缓存、插件兼容门、插件安装
+    health.rs              就绪/存活探针
+    lifecycle.rs           状态机 + 重启/退避 + 优雅关停
+    tray.rs                托盘图标/菜单/状态色
+    plugins.rs             本地插件安装流程（选包 → dsh plugin → loader entry → 重启）
+    commands.rs            WebView<->Rust IPC
+    config.rs              config.json 与日志滚动
+docs/
+  ARCHITECTURE.md          架构设计
+  DEPLOYMENT.md            安装/升级/目录布局
+  INTERFACE_CONTRACT.md    DSH 侧 /api/health + /api/admin/shutdown 契约
+  cicd.md                  打包/发布流程（对齐 DSH 插件生态多项目方案）
+dsd-side/                  DSH 侧 ops overlay 插件（挂载两个路由）
+skills/release/            DSH release skill（agent 发布操作层）
+```
+
+## 文档 / Docs
+
+- [ARCHITECTURE.md](docs/ARCHITECTURE.md) — 架构设计（进程模型、关键机制、性能/安全边界）
+- [DEPLOYMENT.md](docs/DEPLOYMENT.md) — 安装 / 升级 / 目录布局
+- [INTERFACE_CONTRACT.md](docs/INTERFACE_CONTRACT.md) — DSH 侧契约
+- [cicd.md](docs/cicd.md) — 打包 / 发布流程
+
+## License
+
+[Apache-2.0](LICENSE)（与 DSH 生态一致；dsh-desktop 本身非官方、与官方无关联）。

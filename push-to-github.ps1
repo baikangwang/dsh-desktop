@@ -1,4 +1,4 @@
-# push-to-github.ps1 — 把本项目推送到你的 GitHub 仓库（本机运行）。
+﻿# push-to-github.ps1 — 把本项目推送到你的 GitHub 仓库（本机运行）。
 #
 # 用法（推荐用环境变量传 token，避免写进历史）：
 #   $env:GITHUB_TOKEN = "ghp_..."      # 或执行时被询问
@@ -8,7 +8,7 @@
 # GitHub 里轮换该 token（Settings → Developer settings → Personal access tokens）。
 
 param(
-    [string]$Remote = "https://github.com/baikangwang/deepseek-harness-desktop.git",
+    [string]$Remote = "https://github.com/baikangwang/dsh-desktop.git",
     [string]$Token = $env:GITHUB_TOKEN
 )
 
@@ -27,9 +27,6 @@ $authUrl = "$($uri.Scheme)://x-access-token:$Token@$($uri.Host)$($uri.PathAndQue
 if (-not (Test-Path .git)) { git init -b main | Out-Null }
 git remote remove origin 2>$null
 git remote add origin $authUrl
-
-git add -A
-git commit -m "P1: Tauri 2 desktop shell skeleton + DSH interface contract" 2>$null
 
 # 远端若已有初始提交（如 GitHub 自动 README），先合并再推。
 git fetch origin main 2>$null

@@ -2,7 +2,7 @@
 name = "dsh-desktop"
 version = "0.1.0"
 description = "DeepSeek Harness desktop shell (Tauri 2): hosts `dsh web` with lifecycle, tray, and self-update."
-authors = ["you"]
+authors = ["baikangwang"]
 edition = "2021"
 rust-version = "1.77"
 
@@ -30,8 +30,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
 
-# P2: add `tauri-plugin-updater = "2"` and a real pubkey to enable self-update.
-# Keep it out of P1 so `cargo build` succeeds without a signing key.
+# Shell upgrades are offline-package overwrites (no updater plugin); dsh
+# upgrades happen at startup via npx (see dsh_manager.rs).
 
 [features]
 default = ["custom-protocol"]

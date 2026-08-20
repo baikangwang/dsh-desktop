@@ -13,8 +13,9 @@ DshDesktop 是 DeepSeek Harness 的**宿主包装器**，不是 fork：
 ```
 DshDesktop.exe (Tauri, Rust)
  ├─ WebView2 ── http://127.0.0.1:<port>  (DSH Web UI)
- └─ 服务层: process_supervisor / dsh_manager / health / lifecycle / tray / commands
-       └─ spawn dsh web (stdout/stderr 捕获, Job 语义回收)
+ └─ 服务层: process_supervisor / dsh_manager / health / lifecycle / tray / commands / plugins
+       └─ node npx-cli --cache <专属缓存> -y @deepseek-ai/dsh@<version> web --port 0
+            └─ (npx 内部) dsh web   —— stdout/stderr 捕获, Job 语义回收
 ```
 
 - 子进程控制**按 PID**（`taskkill /T /F`）而非共享句柄，supervisor 独占 `tokio::process::Child`，规避 Rust 的 `wait()` 借用难题。
@@ -24,6 +25,7 @@ DshDesktop.exe (Tauri, Rust)
 
 | 机制 | 实现 |
 |---|---|
+| dsh 运行时 | **npx 执行 + 专属缓存**（`%LOCALAPPDATA%\DshDesktop\npx-cache`）：shell 决策目标版本（6h 缓存 latest + 插件 peerDeps 兼容门）→ `node npx-cli --cache … -y @deepseek-ai/dsh@<版本> web …`；npx 负责装新版/复用缓存/运行 |
 | 端口发现 | `--port 0` + 解析 `dsh web: http://…` 行（`process_supervisor::read_port_from_stdout`） |
 | 就绪探测 | TCP connect（`health::is_up`），300ms 轮询，30s 超时 |
 | 单实例 | `tauri-plugin-single-instance`，二次启动聚焦 |
@@ -31,20 +33,22 @@ DshDesktop.exe (Tauri, Rust)
 | 自愈 | 指数退避 1→2→4→8→16→32s，超 `max_restarts` 转 Error |
 | 关窗到托盘 | `CloseRequested` → `prevent_close` + `hide`；托盘「退出」才真正停 |
 | 状态观测 | `AppState::StatusSnapshot`（state/port/url/pid/message）+ 托盘 + 日志 |
+| 插件 | 托盘「安装插件…」→ 本地 `.tgz` → `dsh plugin --profile web add`（corepack pnpm shim）→ 确保 `cordis.patch.yml` loader entry → 重启 dsh |
+| 安装/升级进度 | splash 页轮询 `get_boot_progress`：阶段 + 流式 npm/pnpm 输出，完成后导航 dsh URL |
 
 ## 4. 性能预算
 
-- 冷启动：spawn dsh web 与建窗并行，splash 秒感即开，就绪后导航 → 总 2–4s。
-- 热启动：单实例聚焦 <1s。
+- 冷启动（首次/升级）：进度窗呈现 npx 安装（分钟级），完成后导航。
+- 热启动（版本未变）：版本判定 <1s（缓存命中零网络），npx 缓存命中，整体 ~10–20s 到就绪。
 - 内存：Rust 壳 ~10–20MB + WebView2（复用 Evergreen）+ node，与「浏览器 + dsh web」持平。
 - 空闲 CPU ~0（探针 5s 一次，退出事件驱动）。
 
 ## 5. 可维护性
 
-- 壳/dsh **独立版本** + `MIN_DSH_VERSION` 兼容门；契约仅 C1–C3 + 两路由。
+- 壳/dsh **独立版本** + `MIN_DSH_VERSION` 兼容下限；契约仅 C1–C3 + 两路由。
 - 领域 UI 全在 DSH Web（HMR 快循环），壳保持极薄。
-- 日志：`dsh-web.log`（子进程）、`shell.log`（tracing）；均滚动（P2）。
-- CI/发布：NSIS per-user、Authenticode 签名、minisign 更新签名（P2）。
+- 日志：`dsh-web.log`（子进程）、`shell.log`（tracing）；均滚动（10MiB / 3 代）。
+- CI/发布：NSIS per-user；`v*` tag → GitHub Actions 构建 → Release（`docs/cicd.md`）。
 
 ## 6. 安全边界
 
