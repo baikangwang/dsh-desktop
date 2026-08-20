@@ -8,6 +8,7 @@
 
 use crate::config;
 use anyhow::{anyhow, Context, Result};
+use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -19,6 +20,63 @@ use tokio::process::Command;
 /// This is a compatibility FLOOR: the shell runs the latest registry version
 /// but refuses to run anything below this.
 pub const MIN_DSH_VERSION: &str = "0.1.0-rc.6";
+
+// ---------------------------------------------------------------------------
+// Update channel (user-selectable at startup; persisted)
+// ---------------------------------------------------------------------------
+
+/// Which dsh version the shell should run:
+/// - `latest`  — follows the official npm `latest` dist-tag (the promoted,
+///   stable release; may lag freshly published prereleases).
+/// - `preview` — tracks the highest version number on the registry (includes
+///   prereleases, e.g. versions published under the `next` dist-tag).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum Channel {
+    #[default]
+    Latest,
+    Preview,
+}
+
+impl Channel {
+    pub fn label(self) -> &'static str {
+        match self {
+            Channel::Latest => "稳定版 (latest)",
+            Channel::Preview => "预览版 (最高版本号)",
+        }
+    }
+}
+
+fn channel_path() -> PathBuf {
+    config::data_dir().join("cache").join("dsh-channel.json")
+}
+
+/// Persisted channel choice (missing/invalid file → `Latest`).
+pub fn read_channel() -> Channel {
+    let text = std::fs::read_to_string(channel_path()).ok();
+    let json: Option<serde_json::Value> =
+        text.and_then(|t| serde_json::from_str(&t).ok());
+    let Some(json) = json else {
+        return Channel::Latest;
+    };
+    match json.get("channel").and_then(|c| c.as_str()) {
+        Some("preview") => Channel::Preview,
+        _ => Channel::Latest,
+    }
+}
+
+pub fn persist_channel(channel: Channel) {
+    let path = channel_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let name = match channel {
+        Channel::Latest => "latest",
+        Channel::Preview => "preview",
+    };
+    let json = serde_json::json!({ "channel": name });
+    let _ = std::fs::write(path, serde_json::to_string(&json).unwrap_or_default());
+}
 
 // ---------------------------------------------------------------------------
 // Version helpers (semver-lite with prerelease support)
@@ -228,30 +286,42 @@ async fn npm_view(args: &[&str]) -> Option<String> {
     String::from_utf8(out.stdout).ok()
 }
 
-/// TTL for the cached "latest dsh version" lookup, so most startups never
-/// touch the network.
-const LATEST_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(6 * 3600);
-
-fn latest_cache_path() -> PathBuf {
-    config::data_dir().join("cache").join("dsh-latest.json")
+/// Both channel targets in one registry snapshot (`latest` dist-tag + highest
+/// published version), so the startup check is a single cached npm view.
+#[derive(Debug, Clone)]
+pub struct RemoteVersions {
+    pub latest: String,
+    pub preview: String,
 }
 
-fn read_latest_cache() -> Option<String> {
-    let text = std::fs::read_to_string(latest_cache_path()).ok()?;
+/// TTL for the cached remote-version lookup, so most startups never touch
+/// the network.
+const REMOTE_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(6 * 3600);
+
+fn remote_cache_path() -> PathBuf {
+    config::data_dir().join("cache").join("dsh-remote.json")
+}
+
+/// Fresh cached remote versions (None when stale/missing → caller re-fetches).
+pub fn read_remote_cache() -> Option<RemoteVersions> {
+    let text = std::fs::read_to_string(remote_cache_path()).ok()?;
     let json: serde_json::Value = serde_json::from_str(&text).ok()?;
     let age = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .ok()?
         .as_secs()
         .saturating_sub(json.get("ts")?.as_u64()?);
-    if age > LATEST_CACHE_TTL.as_secs() {
+    if age > REMOTE_CACHE_TTL.as_secs() {
         return None;
     }
-    json.get("version")?.as_str().map(str::to_owned)
+    Some(RemoteVersions {
+        latest: json.get("latest")?.as_str()?.to_owned(),
+        preview: json.get("preview")?.as_str()?.to_owned(),
+    })
 }
 
-fn write_latest_cache(version: &str) {
-    let path = latest_cache_path();
+fn write_remote_cache(latest: &str, preview: &str) {
+    let path = remote_cache_path();
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -259,27 +329,41 @@ fn write_latest_cache(version: &str) {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let json = serde_json::json!({ "version": version, "ts": ts });
+    let json = serde_json::json!({ "latest": latest, "preview": preview, "ts": ts });
     let _ = std::fs::write(path, serde_json::to_string(&json).unwrap_or_default());
 }
 
-/// Whether a fresh "latest version" cache exists (startup check is instant).
-pub fn latest_cache_fresh() -> bool {
-    read_latest_cache().is_some()
+/// Whether a fresh remote-version cache exists (startup check is instant).
+pub fn remote_cache_fresh() -> bool {
+    read_remote_cache().is_some()
 }
 
-/// Latest `@deepseek-ai/dsh` version on the registry (cached; stale fallback).
-pub async fn latest_dsh_version() -> Option<String> {
-    if let Some(cached) = read_latest_cache() {
+/// Latest `@deepseek-ai/dsh` registry snapshot (cached; stale fallback).
+/// One `npm view <pkg> dist-tags versions` call yields both targets:
+/// `latest` = the official `latest` dist-tag (fallback: max version),
+/// `preview` = max of all published versions (prereleases included).
+pub async fn remote_versions() -> Option<RemoteVersions> {
+    if let Some(cached) = read_remote_cache() {
         return Some(cached);
     }
-    let json = npm_view(&["@deepseek-ai/dsh@latest", "version"]).await?;
-    let v = serde_json::from_str::<serde_json::Value>(&json)
-        .ok()?
-        .as_str()
-        .map(str::to_owned)?;
-    write_latest_cache(&v);
-    Some(v)
+    let json = npm_view(&["@deepseek-ai/dsh", "dist-tags", "versions"]).await?;
+    let v: serde_json::Value = serde_json::from_str(&json).ok()?;
+    let tags = v.get("dist-tags").and_then(|t| t.as_object());
+    let versions = v.get("versions").and_then(|x| x.as_array());
+    let max = versions.and_then(|arr| {
+        arr.iter()
+            .filter_map(|x| x.as_str())
+            .max_by(|a, b| version_cmp(a, b))
+            .map(str::to_owned)
+    });
+    let latest = tags
+        .and_then(|t| t.get("latest"))
+        .and_then(|s| s.as_str())
+        .map(str::to_owned)
+        .or_else(|| max.clone())?;
+    let preview = max.unwrap_or_else(|| latest.clone());
+    write_remote_cache(&latest, &preview);
+    Some(RemoteVersions { latest, preview })
 }
 
 /// Declared dependency map of `@deepseek-ai/dsh@<version>` (name -> range).
@@ -436,6 +520,64 @@ impl DshInstall {
         }
         cmd
     }
+
+    /// `node <npx-cli> --cache … -y @deepseek-ai/dsh@<version> --version` —
+    /// installs `<version>` into the npx cache (if absent) and exits once
+    /// ready. Used as an install probe: unlike `dsh web`, it has no URL
+    /// timeout, so a minutes-long cold install is never killed.
+    pub fn probe_command(&self, version: &str) -> Command {
+        let mut cmd = Command::new(&self.node);
+        #[cfg(windows)]
+        {
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        }
+        cmd.arg(&self.npx_cli)
+            .arg("--cache")
+            .arg(&self.npx_cache)
+            .arg("--prefer-offline")
+            .arg("-y")
+            .arg(format!("@deepseek-ai/dsh@{version}"))
+            .arg("--version");
+        // npm is silent on a non-TTY stderr during a long download; bump the
+        // log level so the progress window shows install activity. The version
+        // is pinned exactly, so --prefer-offline (cached packuments/tarballs
+        // without revalidation) is safe and keeps re-installs fast.
+        cmd.env("npm_config_loglevel", "info");
+        cmd
+    }
+
+    /// Install `<version>` into the npx cache via the `--version` probe
+    /// (streams npm output to `lines`). The later `dsh web` spawn is then a
+    /// cache hit — no long URL wait. Err on non-zero exit.
+    pub async fn ensure_installed(
+        &self,
+        version: &str,
+        lines: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    ) -> Result<()> {
+        let mut cmd = self.probe_command(version);
+        cmd.stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        let mut child = cmd.spawn().context("failed to launch dsh install probe")?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow!("no stdout pipe"))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| anyhow!("no stderr pipe"))?;
+        let out = tokio::spawn(drain_lines(stdout, lines.clone()));
+        let err = tokio::spawn(drain_lines(stderr, lines));
+        let status = child.wait().await.context("dsh install probe wait failed")?;
+        let _ = out.await;
+        let _ = err.await;
+        if !status.success() {
+            return Err(anyhow!("dsh {version} 安装失败（npx probe 退出 {status}）"));
+        }
+        tracing::info!("dsh {version} ready in npx cache");
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -527,8 +669,8 @@ pub async fn install_plugin_tarball(
         .stderr
         .take()
         .ok_or_else(|| anyhow!("no stderr pipe"))?;
-    let out_lines = tokio::spawn(drain_lines(stdout, lines.clone()));
-    let err_lines = tokio::spawn(drain_lines(stderr, lines));
+    let out_lines = tokio::spawn(drain_lines(stdout, Some(lines.clone())));
+    let err_lines = tokio::spawn(drain_lines(stderr, Some(lines)));
     let status = child.wait().await.context("dsh plugin add wait failed")?;
     let _ = out_lines.await;
     let _ = err_lines.await;
@@ -567,8 +709,11 @@ fn profile_package_for_tarball(home: &Path, tgz: &Path) -> Result<String> {
 
 async fn drain_lines<R: tokio::io::AsyncRead + Unpin>(
     r: R,
-    lines: tokio::sync::mpsc::UnboundedSender<String>,
+    lines: Option<tokio::sync::mpsc::UnboundedSender<String>>,
 ) {
+    let Some(lines) = lines else {
+        return;
+    };
     let mut reader = BufReader::new(r).lines();
     while let Ok(Some(line)) = reader.next_line().await {
         if lines.send(line).is_err() {

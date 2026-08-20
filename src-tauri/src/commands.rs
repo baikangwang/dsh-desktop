@@ -1,7 +1,8 @@
 //! WebView <-> Rust IPC (minimal, lifecycle-only; no arbitrary fs/shell).
 
 use crate::app::{AppState, BootProgress, StatusSnapshot};
-use tauri::{AppHandle, State};
+use crate::dsh_manager::Channel;
+use tauri::{AppHandle, Manager, State};
 use tauri_plugin_opener::OpenerExt;
 
 #[tauri::command]
@@ -13,6 +14,25 @@ pub async fn get_status(state: State<'_, AppState>) -> Result<StatusSnapshot, St
 #[tauri::command]
 pub async fn get_boot_progress(state: State<'_, AppState>) -> Result<BootProgress, String> {
     Ok(state.progress_snapshot().await)
+}
+
+/// Confirm the update channel on the splash: persists the choice and releases
+/// the supervisor, which then decides/installs/spawns dsh. The picker is
+/// disabled afterwards, so this fires at most once per launch (idempotent).
+#[tauri::command]
+pub async fn confirm_channel(app: AppHandle, channel: Channel) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    if state.is_confirmed() {
+        return Ok(());
+    }
+    crate::dsh_manager::persist_channel(channel);
+    *state.channel.lock().await = channel;
+    state
+        .confirmed
+        .send(true)
+        .map_err(|e| format!("confirm channel failed: {e}"))?;
+    tracing::info!("update channel confirmed: {channel:?}");
+    Ok(())
 }
 
 #[tauri::command]

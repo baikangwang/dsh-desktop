@@ -17,14 +17,49 @@
     .card { text-align: center; max-width: 640px; width: 90%; }
     .logo { font-size: 44px; letter-spacing: 2px; font-weight: 700; color: #e6edf3; }
     .spinner {
-      width: 28px; height: 28px; margin: 28px auto 12px;
+      width: 28px; height: 28px; margin: 26px auto 12px;
       border: 3px solid #30363d; border-top-color: #58a6ff; border-radius: 50%;
       animation: spin 0.9s linear infinite;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
     .status { font-size: 13px; color: #8b949e; min-height: 18px; margin-bottom: 12px; }
+    /* Channel picker (update channel selection at startup) */
+    .channels {
+      display: flex; gap: 10px; justify-content: center;
+      margin: 14px auto 6px;
+    }
+    .chan {
+      display: flex; align-items: center; gap: 8px;
+      padding: 9px 16px; border: 1px solid #30363d; border-radius: 10px;
+      font-size: 13px; color: #8b949e; cursor: pointer;
+      transition: border-color .15s, color .15s, background .15s;
+    }
+    .chan:hover:not(:has(input:disabled)) { border-color: #58a6ff55; }
+    .chan input { accent-color: #58a6ff; cursor: pointer; }
+    .chan input:disabled { cursor: default; }
+    .chan .ver {
+      display: block; font-size: 11px; color: #6e7681;
+      font-family: Consolas, "Courier New", monospace; min-height: 14px;
+    }
+    .chan .ver .loading { color: #6e7681; }
+    .chan:has(input:checked) {
+      border-color: #58a6ff; color: #e6edf3; background: #58a6ff14;
+    }
+    .chan:has(input:disabled) { opacity: .55; }
+    .cur {
+      font-size: 12px; color: #6e7681; min-height: 16px; margin: 10px 0 6px;
+      font-family: Consolas, "Courier New", monospace;
+    }
+    .confirm {
+      margin-top: 12px; padding: 9px 34px;
+      border: none; border-radius: 8px; cursor: pointer;
+      background: #238636; color: #fff; font-size: 14px; font-weight: 600;
+      transition: background .15s, opacity .15s;
+    }
+    .confirm:hover:not(:disabled) { background: #2ea043; }
+    .confirm:disabled { opacity: .4; cursor: default; }
     .log {
-      text-align: left; margin: 0 auto; max-height: 280px; overflow-y: auto;
+      text-align: left; margin: 14px auto 0; max-height: 280px; overflow-y: auto;
       padding: 10px 12px; border: 1px solid #21262d; border-radius: 8px;
       background: #161b22; color: #8b949e;
       font-family: Consolas, "Courier New", monospace; font-size: 11px;
@@ -32,30 +67,106 @@
       display: none;
     }
     .log.visible { display: block; }
-    .hint { margin-top: 24px; font-size: 12px; color: #6e7681; }
+    .hint { margin-top: 18px; font-size: 12px; color: #6e7681; }
   </style>
 </head>
 <body>
   <div class="card">
     <div class="logo">DeepSeek Harness</div>
-    <div class="spinner"></div>
+    <div class="spinner" id="spinner"></div>
     <div class="status" id="status">正在准备 DSH 运行时…</div>
+    <div class="channels" id="channels">
+      <label class="chan" title="跟随官方 npm latest 标签（最稳定）">
+        <input type="radio" name="channel" value="latest" disabled />
+        <span>
+          稳定版 (latest)
+          <span class="ver" id="ver-latest"><span class="loading">获取中…</span></span>
+        </span>
+      </label>
+      <label class="chan" title="跟随注册表最高版本号（含预发布，更新最快）">
+        <input type="radio" name="channel" value="preview" disabled />
+        <span>
+          预览版 (最高版本号)
+          <span class="ver" id="ver-preview"><span class="loading">获取中…</span></span>
+        </span>
+      </label>
+    </div>
+    <div class="cur" id="cur-version"></div>
+    <button class="confirm" id="confirm-btn" disabled>确认启动</button>
     <pre class="log" id="log"></pre>
-    <div class="hint">首次启动需要安装/更新 DSH 运行时，请稍候；如长时间停留请查看日志或从托盘重启</div>
+    <div class="hint">请选择 DSH 更新通道后点击「确认启动」；选择会保留，下次启动默认选中。切换通道请重启应用</div>
   </div>
   <script>
-    // Splash + install-progress page: polls the shell's boot progress and
-    // renders phase / message / streamed npm output. The window navigates to
-    // the DSH URL once the runtime is ready.
+    // Splash + channel picker + install-progress page. Flow:
+    //  1) shell fetches registry targets → versions render on the options;
+    //  2) user picks a channel and clicks 确认启动 (confirm_channel);
+    //  3) shell decides/installs/spawns dsh; this page shows streamed output
+    //     until it navigates to the DSH URL.
     const statusEl = document.getElementById('status');
     const logEl = document.getElementById('log');
+    const curEl = document.getElementById('cur-version');
+    const spinnerEl = document.getElementById('spinner');
+    const verLatestEl = document.getElementById('ver-latest');
+    const verPreviewEl = document.getElementById('ver-preview');
+    const confirmBtn = document.getElementById('confirm-btn');
+    const radios = document.querySelectorAll('input[name="channel"]');
     let lastLineCount = 0;
+    let userTouched = false;
+    let confirmed = false;
+
+    radios.forEach(r => r.addEventListener('change', () => { userTouched = true; }));
+
+    confirmBtn.addEventListener('click', async () => {
+      if (confirmed) return;
+      const sel = document.querySelector('input[name="channel"]:checked');
+      if (!sel) return;
+      confirmed = true;
+      setPickerDisabled(true);
+      try {
+        await window.__TAURI__.core.invoke('confirm_channel', { channel: sel.value });
+      } catch (e) { /* ignore; poll will reflect progress */ }
+    });
+
+    function setPickerDisabled(disabled) {
+      radios.forEach(r => { r.disabled = disabled; });
+      confirmBtn.disabled = disabled;
+    }
 
     async function refresh() {
       try {
         const p = await window.__TAURI__.core.invoke('get_boot_progress');
+        if (!p) return;
+
+        // First contact: initialize the picker from the persisted channel.
+        if (!userTouched && !confirmed && p.channel) {
+          const sel = document.querySelector('input[name="channel"][value="' + p.channel + '"]');
+          if (sel) sel.checked = true;
+        }
+
+        // Version targets → option labels; enable the picker when ready.
+        if (p.versions === 'ready') {
+          if (p.latest_version) verLatestEl.textContent = p.latest_version;
+          if (p.preview_version) verPreviewEl.textContent = p.preview_version;
+          if (!confirmed) setPickerDisabled(false);
+        } else if (p.versions === 'offline') {
+          verLatestEl.textContent = '离线/未知';
+          verPreviewEl.textContent = '离线/未知';
+          if (!confirmed) setPickerDisabled(false);
+        }
+        // fetching → options stay disabled (default HTML state).
+
+        if (p.current_version) {
+          curEl.textContent = '已安装 ' + p.current_version;
+        }
+
         if (p && p.message) statusEl.textContent = p.message;
-        if (p && Array.isArray(p.lines) && p.lines.length) {
+
+        // Spinner: only while the shell is actually working (fetching or
+        // booting), not while waiting for the user's choice.
+        const waiting = p.versions !== 'fetching' && p.phase === 'choose-channel';
+        spinnerEl.style.display = waiting ? 'none' : 'block';
+
+        if (Array.isArray(p.lines) && p.lines.length) {
           logEl.textContent = p.lines.join('\n');
           logEl.scrollTop = logEl.scrollHeight;
           if (p.lines.length !== lastLineCount) {

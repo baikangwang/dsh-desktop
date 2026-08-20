@@ -6,11 +6,16 @@
 use crate::app::{AppState, RunState};
 use crate::{config, dsh_manager, health, process_supervisor};
 use anyhow::{anyhow, Result};
+use std::path::Path;
 use tauri::{AppHandle, Manager};
 use tokio::process::Command;
 use std::time::Duration;
 
 /// Run until shutdown. Owns the child for its whole life and restarts per policy.
+///
+/// Boot gate: the splash first fetches the registry version targets, then
+/// WAITS for the user to pick a channel and click 确认启动 (`confirm_channel`)
+/// before any version decision / install / spawn happens.
 pub async fn supervise(app: &AppHandle) -> Result<()> {
     let install = app.state::<AppState>().install.clone();
     let config = app.state::<AppState>().config.clone();
@@ -22,77 +27,54 @@ pub async fn supervise(app: &AppHandle) -> Result<()> {
     // own npx-installed dsh).
     cleanup_orphan_dsh_web().await;
 
-    // --- Decide the dsh version to run (cached latest + compat gate) ---
-    let current = dsh_manager::current_version();
-    let mut target: Option<String> = None;
-    let mut installing = false;
-    // A stale/missing cache means the startup check will hit the network
-    // (slow on a cold npm cache): surface the progress window up front.
-    if !dsh_manager::latest_cache_fresh() {
-        if let Some(w) = app.get_webview_window("main") {
-            let _ = w.show();
-        }
-        app.state::<AppState>()
-            .set_progress("checking", "正在检查 DSH 运行时…")
-            .await;
+    // --- Channel picker: fetch version targets, then wait for confirmation.
+    // Nothing below starts dsh before the user confirms. ---
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
     }
-    match dsh_manager::latest_dsh_version().await {
-        Some(latest) => match &current {
-            None => {
-                // First run: must install (network required).
-                target = Some(latest.clone());
-                installing = true;
-                app.state::<AppState>()
-                    .set_status(RunState::Starting, Some(format!("首次运行：安装 DSH {latest}…").into()))
-                    .await;
-                app.state::<AppState>()
-                    .set_progress("installing-dsh", format!("首次运行：安装 DSH {latest}…"))
-                    .await;
-            }
-            Some(cur) if *cur != latest => {
-                // Plugin-compatibility gate (R1): only upgrade when every
-                // profile plugin's @deepseek-ai/* peerDeps stay satisfied.
-                let deps = dsh_manager::dsh_dependencies(&latest).await;
-                let bad = match &deps {
-                    Some(d) => dsh_manager::plugin_incompatibilities(&home, d).await,
-                    None => {
-                        tracing::warn!("cannot resolve dsh@{latest} deps; skipping upgrade");
-                        Vec::new()
-                    }
-                };
-                if bad.is_empty() && deps.is_some() {
-                    target = Some(latest.clone());
-                    installing = true;
-                    app.state::<AppState>()
-                        .set_status(RunState::Starting, Some(format!("正在更新 DSH {cur} → {latest}…").into()))
-                        .await;
-                    app.state::<AppState>()
-                        .set_progress("updating-dsh", format!("正在更新 DSH {cur} → {latest}…"))
-                        .await;
-                } else if !bad.is_empty() {
-                    tracing::warn!("skip dsh upgrade to {latest}: {}", bad.join("; "));
-                    app.state::<AppState>()
-                        .set_progress("checking", format!("已跳过 DSH {latest} 升级（插件兼容性）"))
-                        .await;
-                    for line in &bad {
-                        app.state::<AppState>().push_progress_line(line.clone()).await;
-                    }
-                }
-            }
-            _ => {} // already on latest
-        },
-        None => {
-            // Registry unreachable: stay on the current version; without any
-            // recorded version the first run cannot proceed offline.
-            if current.is_none() {
-                return Err(anyhow!(
-                    "无法连接 npm registry，且本机没有可用的 DSH 运行时（首次运行需要网络）"
-                ));
-            }
-        }
+    app.state::<AppState>()
+        .set_progress("choose-channel", "正在获取版本信息…")
+        .await;
+    let remote = dsh_manager::remote_versions().await;
+    {
+        let state = app.state::<AppState>();
+        *state.versions.lock().await = if remote.is_some() {
+            crate::app::VersionState::Ready
+        } else {
+            crate::app::VersionState::Offline
+        };
     }
+    match &remote {
+        Some(r) => tracing::info!(
+            "registry targets: latest={} preview={}",
+            r.latest,
+            r.preview
+        ),
+        None => tracing::warn!("registry unreachable; picker shows offline"),
+    }
+    app.state::<AppState>()
+        .set_progress("choose-channel", "请选择 DSH 更新通道后点击「确认启动」")
+        .await;
+    tracing::info!("waiting for channel confirmation…");
 
-    let version = target.clone().unwrap_or_else(|| current.clone().unwrap_or_default());
+    // Wait for the user's confirmation (confirm_channel releases this).
+    {
+        let mut confirmed = app.state::<AppState>().confirmed.subscribe();
+        while !*confirmed.borrow() {
+            if app.state::<AppState>().is_shutting_down() {
+                return Ok(());
+            }
+            confirmed.changed().await.ok();
+        }
+    }
+    let channel = *app.state::<AppState>().channel.lock().await;
+    tracing::info!("user confirmed channel: {channel:?}");
+
+    // Decide the dsh version for the confirmed channel (compat gate).
+    let target = decide_version(app, &home, channel, remote).await?;
+    let version = target
+        .clone()
+        .unwrap_or_else(|| dsh_manager::current_version().unwrap_or_default());
 
     // Version gate: refuse to drive a dsh older than the contract floor
     // (docs/INTERFACE_CONTRACT.md §6) instead of misparsing its output.
@@ -111,24 +93,39 @@ pub async fn supervise(app: &AppHandle) -> Result<()> {
         tracing::warn!("ops overlay install failed; graceful shutdown will fall back to hard kill: {e:#}");
     }
 
-    // Progress sink: during an install/update, surface npx's streamed output.
-    let progress_tx = if installing {
-        if let Some(w) = app.get_webview_window("main") {
-            let _ = w.show();
-        }
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-        let handle = app.clone();
-        tauri::async_runtime::spawn(async move {
-            while let Some(line) = rx.recv().await {
-                handle.state::<AppState>().push_progress_line(line).await;
-            }
-        });
-        Some(tx)
+    // Progress sink while an install/update is in flight.
+    let mut progress_tx = if target.is_some() {
+        Some(progress_sink(app))
     } else {
         None
     };
 
+    // Cold install path: the npx `--version` probe has NO URL timeout, so a
+    // minutes-long download is never killed by the web spawn's 30s ready gate;
+    // the later spawn is a cache hit. Retried with backoff.
     let mut attempt: u32 = 0;
+    if let Some(tx) = progress_tx.as_ref() {
+        loop {
+            if app.state::<AppState>().is_shutting_down() {
+                break;
+            }
+            match install.ensure_installed(&version, Some(tx.clone())).await {
+                Ok(()) => break,
+                Err(e) => {
+                    attempt += 1;
+                    if attempt > config.max_restarts {
+                        return Err(anyhow!("dsh {version} 安装失败: {e:#}"));
+                    }
+                    backoff(attempt).await;
+                }
+            }
+        }
+        progress_tx = None;
+    }
+
+    // Serve loop: spawn dsh web, keep it alive per restart policy. The channel
+    // and version are fixed for the whole session (the picker is disabled once
+    // confirmed; switching channels means restarting the app).
     loop {
         if app.state::<AppState>().is_shutting_down() {
             break;
@@ -228,6 +225,104 @@ pub async fn supervise(app: &AppHandle) -> Result<()> {
         .set_status(RunState::Stopped, Some("已退出".into()))
         .await;
     Ok(())
+}
+
+/// Decide the dsh version to run for the confirmed channel, using the
+/// picker's pre-fetched registry snapshot. Returns `None` when staying on
+/// the current version (offline, compat-gated upgrade, or already current).
+async fn decide_version(
+    app: &AppHandle,
+    home: &Path,
+    channel: dsh_manager::Channel,
+    remote: Option<dsh_manager::RemoteVersions>,
+) -> Result<Option<String>> {
+    let current = dsh_manager::current_version();
+
+    let Some(remote) = remote else {
+        // Registry unreachable: stay on the current version; without any
+        // recorded version the first run cannot proceed offline.
+        if current.is_none() {
+            return Err(anyhow!(
+                "无法连接 npm registry，且本机没有可用的 DSH 运行时（首次运行需要网络）"
+            ));
+        }
+        app.state::<AppState>()
+            .set_progress("checking", "无法连接 npm registry，继续使用当前版本")
+            .await;
+        return Ok(None);
+    };
+
+    let wanted = match channel {
+        dsh_manager::Channel::Latest => remote.latest.clone(),
+        dsh_manager::Channel::Preview => remote.preview.clone(),
+    };
+    tracing::info!(
+        "channel {channel:?}: latest={} preview={} → wanted={wanted}",
+        remote.latest,
+        remote.preview
+    );
+
+    match &current {
+        None => {
+            // First run: must install (network required).
+            app.state::<AppState>()
+                .set_status(RunState::Starting, Some(format!("首次运行：安装 DSH {wanted}…").into()))
+                .await;
+            app.state::<AppState>()
+                .set_progress("installing-dsh", format!("首次运行：安装 DSH {wanted}…"))
+                .await;
+            Ok(Some(wanted))
+        }
+        Some(cur) if *cur != wanted => {
+            // Plugin-compatibility gate (R1): only upgrade when every profile
+            // plugin's @deepseek-ai/* peerDeps stay satisfied.
+            let deps = dsh_manager::dsh_dependencies(&wanted).await;
+            let bad = match &deps {
+                Some(d) => dsh_manager::plugin_incompatibilities(home, d).await,
+                None => {
+                    tracing::warn!("cannot resolve dsh@{wanted} deps; skipping upgrade");
+                    Vec::new()
+                }
+            };
+            if bad.is_empty() && deps.is_some() {
+                app.state::<AppState>()
+                    .set_status(RunState::Starting, Some(format!("正在更新 DSH {cur} → {wanted}…").into()))
+                    .await;
+                app.state::<AppState>()
+                    .set_progress("updating-dsh", format!("正在更新 DSH {cur} → {wanted}…"))
+                    .await;
+                Ok(Some(wanted))
+            } else if !bad.is_empty() {
+                tracing::warn!("skip dsh upgrade to {wanted}: {}", bad.join("; "));
+                app.state::<AppState>()
+                    .set_progress("checking", format!("已跳过 DSH {wanted} 升级（插件兼容性）"))
+                    .await;
+                for line in &bad {
+                    app.state::<AppState>().push_progress_line(line.clone()).await;
+                }
+                Ok(None)
+            } else {
+                Ok(None) // deps unknown → stay on the current version
+            }
+        }
+        Some(_) => Ok(None), // already on the channel target
+    }
+}
+
+/// Progress sink: surface npx's streamed output on the progress window during
+/// an install/update. Dropping the returned sender ends the relay.
+fn progress_sink(app: &AppHandle) -> tokio::sync::mpsc::UnboundedSender<String> {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+    }
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        while let Some(line) = rx.recv().await {
+            handle.state::<AppState>().push_progress_line(line).await;
+        }
+    });
+    tx
 }
 
 /// Ask the supervisor to restart (used by tray/IPC). Kills the current child;

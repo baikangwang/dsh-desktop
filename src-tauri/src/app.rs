@@ -1,7 +1,7 @@
 //! Application state and startup wiring.
 
 use crate::config::Config;
-use crate::dsh_manager::DshInstall;
+use crate::dsh_manager::{Channel, DshInstall};
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{AppHandle, Manager};
@@ -35,14 +35,36 @@ impl Default for StatusSnapshot {
     }
 }
 
+/// Whether the picker's version lookup finished (drives option enablement).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum VersionState {
+    /// The shell is fetching the registry targets (options disabled).
+    #[default]
+    Fetching,
+    /// Targets known (`latest_version`/`preview_version` populated).
+    Ready,
+    /// Registry unreachable; proceed with the locally installed version.
+    Offline,
+}
+
 /// Long-running boot / plugin-install progress surfaced to the splash window.
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct BootProgress {
-    /// One of: "checking" | "installing-dsh" | "updating-dsh" | "plugin-install" | "ready".
+    /// One of: "choose-channel" | "checking" | "installing-dsh" | "updating-dsh" | "plugin-install" | "ready".
     pub phase: String,
     pub message: String,
     /// Last N streamed lines (npm/pnpm output).
     pub lines: Vec<String>,
+    /// Update channel currently in effect (drives the splash picker).
+    pub channel: Channel,
+    /// Version the shell last ran successfully (if any).
+    pub current_version: Option<String>,
+    /// Channel targets from the remote lookup, for the picker labels.
+    pub latest_version: Option<String>,
+    pub preview_version: Option<String>,
+    /// Registry lookup state (options enabled only when Ready/Offline).
+    pub versions: VersionState,
 }
 
 pub struct AppState {
@@ -51,6 +73,13 @@ pub struct AppState {
     pub shutdown_token: String,
     pub status: Mutex<StatusSnapshot>,
     pub progress: Mutex<BootProgress>,
+    /// Update channel the user confirmed at startup (`confirm_channel`).
+    pub channel: Mutex<Channel>,
+    /// Set true by `confirm_channel`; the supervisor waits for it before
+    /// deciding/installing/spawning dsh.
+    pub confirmed: tokio::sync::watch::Sender<bool>,
+    /// Registry lookup state for the picker (fetching → ready/offline).
+    pub versions: Mutex<VersionState>,
     /// PID of the current `dsh web` child (set by the supervisor; used by
     /// restart/shutdown, which control the child by PID rather than handle).
     pub server_pid: Mutex<Option<u32>>,
@@ -89,7 +118,19 @@ impl AppState {
     }
 
     pub async fn progress_snapshot(&self) -> BootProgress {
-        self.progress.lock().await.clone()
+        let mut p = self.progress.lock().await.clone();
+        p.channel = *self.channel.lock().await;
+        p.versions = *self.versions.lock().await;
+        p.current_version = crate::dsh_manager::current_version();
+        if let Some(r) = crate::dsh_manager::read_remote_cache() {
+            p.latest_version = Some(r.latest);
+            p.preview_version = Some(r.preview);
+        }
+        p
+    }
+
+    pub fn is_confirmed(&self) -> bool {
+        *self.confirmed.borrow()
     }
 
     pub fn is_shutting_down(&self) -> bool {
@@ -120,6 +161,7 @@ pub fn setup(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
 
     let config = Config::load().unwrap_or_default();
     let install = DshInstall::resolve()?;
+    let (confirmed, _) = tokio::sync::watch::channel(false);
 
     app.manage(AppState {
         config,
@@ -127,6 +169,9 @@ pub fn setup(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         shutdown_token: crate::dsh_manager::fresh_token(),
         status: Mutex::new(StatusSnapshot::default()),
         progress: Mutex::new(BootProgress::default()),
+        channel: Mutex::new(crate::dsh_manager::read_channel()),
+        confirmed,
+        versions: Mutex::new(VersionState::Fetching),
         server_pid: Mutex::new(None),
         shutting_down: AtomicBool::new(false),
         force_restart: AtomicBool::new(false),

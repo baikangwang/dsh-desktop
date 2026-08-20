@@ -35,6 +35,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_status,
             commands::get_boot_progress,
+            commands::confirm_channel,
             commands::restart_dsh,
             commands::open_logs,
             commands::quit

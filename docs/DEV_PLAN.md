@@ -85,6 +85,16 @@ npm run tauri -- dev    # 验证：spawn dsh web → 解析端口 → 健康就�
 - ✅ 干净启动 19s 到就绪（版本判定 2.2s 零网络 + npx 缓存命中 + dsh boot），无弹窗、无崩溃循环
 - ✅ dsh rc.6 → rc.7 自动升级（进度窗体）；`/api/health` 200 + `dsh-ide-ui` 加载
 
+已推进（2026-08-20）——**更新通道选择（评审后定稿）**：
+- ✅ `Channel{latest,preview}`：持久化 `cache/dsh-channel.json`，默认 `latest`
+- ✅ 远端版本一次取齐（`npm view … dist-tags versions` → `cache/dsh-remote.json`，6h TTL）：
+  `latest`=官方 latest 标签（rc.8 发布于 `next` 通道，latest 仍为 rc.7），`preview`=最高版本号（rc.8）
+- ✅ **确认门启动流程**（用户评审后重做）：splash 先联网取版本目标（选项禁用）→ 版本号呈现到选项
+  → 用户选择 → 点「确认启动」（`confirm_channel`）→ 才决策/安装/启动 dsh；确认后选项禁用
+- ✅ 冷安装修复：`--version` probe 无 URL 超时（不再 30s 杀循环）+ `--prefer-offline`（精确版本 pin，安全）
+- ✅ 双版本共存：npx 按 spec 哈希缓存，latest/preview 互不覆盖；误选重启应用重选
+- ⏳ 端到端验证：preview → rc.8 / latest → rc.7（见下）
+
 **待办（P5）**
 - Authenticode 代码签名（需证书；release.ps1 留 `AUTHENTICODE_CERT` 钩子）
 - 插件"卸载"（v1 只做安装/升级；卸载可手动删 profile 配置）

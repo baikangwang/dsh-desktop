@@ -25,7 +25,7 @@ DshDesktop.exe (Tauri, Rust)
 
 | 机制 | 实现 |
 |---|---|
-| dsh 运行时 | **npx 执行 + 专属缓存**（`%LOCALAPPDATA%\DshDesktop\npx-cache`）：shell 决策目标版本（6h 缓存 latest + 插件 peerDeps 兼容门）→ `node npx-cli --cache … -y @deepseek-ai/dsh@<版本> web …`；npx 负责装新版/复用缓存/运行 |
+| dsh 运行时 | **npx 执行 + 专属缓存**（`%LOCALAPPDATA%\DshDesktop\npx-cache`）：按**更新通道**决策目标版本（splash 选择，默认 `latest`；6h 缓存 `dsh-remote.json` 一次取 latest 标签 + 最高版本号；插件 peerDeps 兼容门）→ `node npx-cli --cache … -y @deepseek-ai/dsh@<版本> web …`；npx 负责装新版/复用缓存/运行；latest/preview 两个版本按 spec 哈希**共存**于 npx 缓存，互不覆盖 |
 | 端口发现 | `--port 0` + 解析 `dsh web: http://…` 行（`process_supervisor::read_port_from_stdout`） |
 | 就绪探测 | TCP connect（`health::is_up`），300ms 轮询，30s 超时 |
 | 单实例 | `tauri-plugin-single-instance`，二次启动聚焦 |
@@ -35,6 +35,7 @@ DshDesktop.exe (Tauri, Rust)
 | 状态观测 | `AppState::StatusSnapshot`（state/port/url/pid/message）+ 托盘 + 日志 |
 | 插件 | 托盘「安装插件…」→ 本地 `.tgz` → `dsh plugin --profile web add`（corepack pnpm shim）→ 确保 `cordis.patch.yml` loader entry → 重启 dsh |
 | 安装/升级进度 | splash 页轮询 `get_boot_progress`：阶段 + 流式 npm/pnpm 输出，完成后导航 dsh URL |
+| 更新通道 | `Channel{latest,preview}`（`cache/dsh-channel.json` 持久化）；启动流程：**splash 先联网取版本目标（选项禁用）→ 版本号呈现到选项 → 用户选择 → 点「确认启动」（`confirm_channel`）→ 才决策/安装/启动 dsh**；确认后选项禁用，切换通道=重启应用 |
 
 ## 4. 性能预算
 
