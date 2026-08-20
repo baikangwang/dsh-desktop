@@ -33,6 +33,7 @@ DshDesktop.exe (Tauri, Rust)
 | 自愈 | 指数退避 1→2→4→8→16→32s，超 `max_restarts` 转 Error |
 | 关窗到托盘 | `CloseRequested` → `prevent_close` + `hide`；托盘「退出」才真正停 |
 | 状态观测 | `AppState::StatusSnapshot`（state/port/url/pid/message）+ 托盘 + 日志 |
+| 托盘版本信息 | 菜单底部灰色只读项：`DSH desktop v<壳>` / `DSH 运行时 v<dsh>`（Ready 时重建菜单刷新）；tooltip 追加 dsh 版本 |
 | 插件 | 托盘「安装插件…」→ 本地 `.tgz` → `dsh plugin --profile web add`（corepack pnpm shim）→ 确保 `cordis.patch.yml` loader entry → 重启 dsh |
 | 安装/升级进度 | splash 页轮询 `get_boot_progress`：阶段 + 流式 npm/pnpm 输出，完成后导航 dsh URL |
 | 更新通道 | `Channel{latest,preview}`（`cache/dsh-channel.json` 持久化）；启动流程：**splash 先联网取版本目标（选项禁用）→ 版本号呈现到选项 → 用户选择 → 点「确认启动」（`confirm_channel`）→ 才决策/安装/启动 dsh**；确认后选项禁用，切换通道=重启应用 |

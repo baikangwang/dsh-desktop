@@ -1,6 +1,6 @@
 [package]
 name = "dsh-desktop"
-version = "0.1.0"
+version = "0.1.1"
 description = "DeepSeek Harness desktop shell (Tauri 2): hosts `dsh web` with lifecycle, tray, and self-update."
 authors = ["baikangwang"]
 edition = "2021"

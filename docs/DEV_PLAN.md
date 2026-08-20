@@ -93,6 +93,8 @@ npm run tauri -- dev    # 验证：spawn dsh web → 解析端口 → 健康就�
   → 用户选择 → 点「确认启动」（`confirm_channel`）→ 才决策/安装/启动 dsh；确认后选项禁用
 - ✅ 冷安装修复：`--version` probe 无 URL 超时（不再 30s 杀循环）+ `--prefer-offline`（精确版本 pin，安全）
 - ✅ 双版本共存：npx 按 spec 哈希缓存，latest/preview 互不覆盖；误选重启应用重选
+- ✅ rc.8 自动开浏览器 → 壳传 `--no-open`（版本门 ≥ rc.8；rc.6/rc.7 无该参数不能传）
+- ✅ 托盘展示版本：菜单底部灰色只读项 `DSH desktop v<壳>` / `DSH 运行时 v<dsh>`（Ready 时刷新），tooltip 追加 dsh 版本
 - ⏳ 端到端验证：preview → rc.8 / latest → rc.7（见下）
 
 **待办（P5）**

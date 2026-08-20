@@ -502,6 +502,12 @@ impl DshInstall {
             cmd.arg("--patch").arg(patch);
         }
         cmd.arg("--port").arg(port.to_string());
+        // rc.8+ opens the default browser after startup; the desktop shell
+        // never wants that (the WebView is the UI). rc.6/rc.7 lack the flag,
+        // so it must be version-gated or commander rejects the invocation.
+        if version_at_least(version, "0.1.0-rc.8") {
+            cmd.arg("--no-open");
+        }
         cmd.args(&config.extra_dsh_args);
         cmd.env("DSH_DESKTOP_SHUTDOWN_TOKEN", token);
         if let Some(home) = &config.dsh_home {

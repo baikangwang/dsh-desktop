@@ -179,7 +179,8 @@ pub fn setup(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
 
     crate::tray::build(app)?;
 
-    // Tray status color watcher: reflect RunState changes on the tray icon.
+    // Tray status color watcher: reflect RunState changes on the tray icon;
+    // once Ready, also refresh the menu's dsh version line (post-upgrade).
     {
         let handle = app.clone();
         tauri::async_runtime::spawn(async move {
@@ -189,6 +190,9 @@ pub fn setup(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                 if last != Some(state) {
                     last = Some(state);
                     crate::tray::update_status_color(&handle, state);
+                    if state == RunState::Ready {
+                        crate::tray::refresh_versions(&handle);
+                    }
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             }
