@@ -10,7 +10,7 @@
 |---|---|---|
 | 操作层 | `skills/release/SKILL.md` | agent 识别项目、读配置、前置检查、**向用户确认**、调执行层、验证 |
 | 执行层 | `scripts/dsh-release.mjs`（幂等） | 读 `dsh-release.json`（版本源 `src-tauri/tauri.conf.json`）→ 自动打 tag + push → 维护 `release.yml`（缺失生成/不一致覆盖） |
-| CI 层 | `.github/workflows/release.yml`（生成）+ `build.yml`（手写，push/PR 校验） | `v*` tag → 版本断言 → `npm run tauri -- build` → NSIS 上传 GitHub Release |
+| CI 层 | `.github/workflows/release.yml`（生成，唯一 workflow） | `v*` tag → 版本断言 → `npm run tauri -- build` → NSIS 上传 GitHub Release |
 
 项目差异收敛在 `dsh-release.json`：
 
@@ -24,8 +24,10 @@
 }
 ```
 
-**关键语义**：普通 `git push` 只触发 `build.yml` 校验（保证可编译）；只有推送
-`v*` tag 才触发 `release.yml` 发布。**确认点在打 tag 之前**。
+**关键语义**：普通 `git push` 不触发任何构建；只有推送 `v*` tag 才触发
+`release.yml` 发布。**确认点在打 tag 之前**。注：GitHub 对**已存在的 tag
+强制移动不会重新触发**——同版本重发需先删除远程 tag 再推送（或用 `--force`
+删除重建，且版本需先 bump 产生新 tag）。
 
 ## 2. 使用
 

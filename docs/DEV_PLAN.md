@@ -93,10 +93,8 @@ npm run tauri -- dev    # 验证：spawn dsh web → 解析端口 → 健康就�
 
 ## Phase 3 — CI / 发布
 
-- `.github/workflows/build.yml`（push/PR 校验，手写）+ `release.yml`（`v*` tag 发布，由
-  `scripts/dsh-release.mjs` 按模板生成/覆盖）：
-  - push/PR → 构建 NSIS + 上传 artifact（校验可编译）
-  - tag `v*` → 版本断言 → `npm run tauri -- build` → NSIS 上传 GitHub Release（幂等 clobber）
+- `.github/workflows/release.yml`（唯一 workflow，由 `scripts/dsh-release.mjs` 按模板生成/覆盖）：
+  - `v*` tag → 版本断言 → `npm run tauri -- build` → NSIS 上传 GitHub Release（幂等 clobber）
   - 详见 `docs/cicd.md`；发布用 `node scripts/dsh-release.mjs --dry-run` 预览后执行
 - 本地推送：`push-to-github.ps1`（需 `$env:GITHUB_TOKEN`，用户已刷新 PAT 并写入本机 GCM；仓库地址 `https://github.com/baikangwang/dsh-desktop`）
 

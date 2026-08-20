@@ -197,7 +197,7 @@ function tauriWorkflow(cfg) {
   lines.push('        env:')
   lines.push('          GH_TOKEN: \${{ github.token }}')
   lines.push('        run: |')
-  lines.push('          TAG="\${{ github.ref_name }}"')
+  lines.push('          $TAG = "${{ github.ref_name }}"')
   lines.push('          $Artifacts = Get-ChildItem "src-tauri/target/release/bundle/nsis/*.exe" -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }')
   lines.push('          if ($Artifacts.Count -eq 0) { Write-Error "no NSIS installer produced"; exit 1 }')
   lines.push('          if (gh release view "$TAG" --repo "\${{ github.repository }}" >$null 2>&1) {')
