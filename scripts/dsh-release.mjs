@@ -176,6 +176,7 @@ function tauriWorkflow(cfg) {
   lines.push('        run: npm install')
   lines.push('')
   lines.push('      - name: Assert tag matches tauri.conf.json version')
+  lines.push('        shell: bash   # windows runners default to pwsh; the assert is bash syntax')
   lines.push('        run: |')
   lines.push(`          APP_VERSION="$(node -p "require('./${verFile}').version")"`)
   lines.push(`          TAG_VERSION="\${GITHUB_REF_NAME#${cfg.tagPrefix}}"`)

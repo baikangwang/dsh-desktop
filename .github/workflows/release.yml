@@ -36,6 +36,7 @@ jobs:
         run: npm install
 
       - name: Assert tag matches tauri.conf.json version
+        shell: bash   # windows runners default to pwsh; the assert is bash syntax
         run: |
           APP_VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
           TAG_VERSION="${GITHUB_REF_NAME#v}"
