@@ -1,5 +1,5 @@
 // ⚠️ 本文件是 agent-mode 仓库 .dsh/tools/code-gate.mjs 的**副本**。正本：agent-mode 仓库 .dsh/tools/code-gate.mjs。
-// 副本生成时间：2026-09-20T03:06:53.076Z
+// 副本生成时间：2026-09-20T03:25:26.104Z
 /**
  * code-gate.mjs — 把可形式化的代码判据下沉为脚本（P1b，对应 QA C2–C6）
  *
@@ -122,8 +122,22 @@ function readProfile() {
         depth++
         if (depth === parts.length) { collecting = true; continue }
       } else if (collecting) {
-        if (indent === depth * 2 && line.trim().startsWith('- ')) out.push(line.trim().slice(2).trim())
-        else if (indent <= (depth - 1) * 2) break
+        if (indent === depth * 2 && line.trim().startsWith('- ')) {
+          // **必须与标量分支（上面的 `val`）同口径剥掉行尾注释**，2026-09-20 第十轮修。
+          //
+          // 原先这里只做 `.trim()`，于是 `- packages/ide/src/   # 唯一源码树` 解析出来的
+          // 前缀**带着注释文本**，`packages/ide/src/index.ts` 一个都匹配不上 ——
+          // C2 于是落到「变更文件不在声明的 package_layout 前缀内」这一条，
+          // 判**「不适用（N/A）」**。而 N/A 在本模式里**不阻断**，
+          // 所以它的表现是「门禁通过、结论看起来正常」，缺陷被静默吞掉。
+          //
+          // deepseek-harness-UI 接入时实测复现：作者给 `package_layout` 列表项加了行尾注释，
+          // C2 静默降级成 N/A；把注释移到列表上方才恢复 PASS。
+          // 这是「静默降级」那一类缺陷，按本模式自己的原则必须堵住，
+          // 而不是要求每个接入者都记得「列表项不许写注释」。
+          const item = line.trim().slice(2).trim().replace(/\s+#.*$/, '').replace(/^["']|["']$/g, '')
+          if (item) out.push(item)
+        } else if (indent <= (depth - 1) * 2) break
       }
     }
     return out

@@ -102,6 +102,20 @@ check('C5 能解析 YAML 块标量（build: >- 后缩进的命令）', f5.s.C5 =
 const f6 = withProfile('meta:\n  kind: agile-project\ntech_stack:\n  build: |\n    npm --version\n', 'src/clean.mjs');
 check('C5 能解析字面块标量（build: | 后缩进的命令）', f6.s.C5 === 'PASS', 'C5=' + f6.s.C5);
 
+// ── F7：**YAML 列表项带行尾注释** → C2 必须仍判 PASS，不能静默降级成 N/A ──
+//
+// **2026-09-20 第十轮补的第三条回归断言。** `code-gate.mjs` 的 profile 解析器有两个分支：
+// 标量分支（`val`）剥行尾注释，**列表分支（`list`）不剥**。于是
+// `- src/   # 主源码树` 解析出来的前缀**带着注释文本**，变更文件一个都匹配不上，
+// C2 落到「不在声明的前缀内」→ 判 **N/A**。
+//
+// **为什么这条最阴**：N/A 在本模式里合法且**不阻断**，所以表现是
+// 「门禁通过、结论看起来正常」——缺陷被静默吞掉，而不是报错。
+// deepseek-harness-UI 接入时实测复现（作者给列表项加了行尾注释，C2 静默降级）。
+// 修法是让两个分支同口径；这条断言保证它不会退回去。
+const f7 = withProfile('meta:\n  kind: agile-project\ntech_stack:\n  build: none\n  package_layout:\n    - src/          # 主源码树\n', 'src/clean.mjs');
+check('C2 在 package_layout 列表项带行尾注释时仍 PASS（不静默降级成 N/A）', f7.s.C2 === 'PASS', 'C2=' + f7.s.C2);
+
 // ── C3：明文密钥 + 拼接 SQL 必须 FAIL，且退出码 1 ───────────────────────────
 const r3 = withProfile('meta:\n  kind: agile-project\ntech_stack:\n  build: none\n', 'src/bad.mjs');
 check('C3 对明文密钥 + 拼接 SQL 判 FAIL', r3.s.C3 === 'FAIL', 'C3=' + r3.s.C3);
