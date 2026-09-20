@@ -1,0 +1,90 @@
+# 敏捷模式（agile）— 本项目的骨架声明（形态 A）
+# 契约只写"如何检查"，具体取值一律来自本文件；**换项目时改本文件，不改契约**。
+#
+# 本文件的每个取值都来自对仓库的真实阅读，取证位置写在注释里：
+#   package.json / dsh-release.json / .github/workflows/release.yml / src-tauri/Cargo.toml
+#   / src-tauri/src/*.rs / docs/{ARCHITECTURE,DEPLOYMENT,cicd}.md / README.md
+# 接入日期 2026-09-20（首次交付，此前本项目完全没有 .dsh/）。
+meta:
+  kind: agile-project
+  version: 2
+  project: deepseek-harness-desktop
+  title: dsh-desktop — DeepSeek Harness 的桌面外壳（Tauri 2 + Rust + WebView2，Windows NSIS）
+
+# 契约与 skill 中的 {{paths.*}} / {{tech_stack.*}} 占位符解析到此处。
+# 取值纪律：声明前先确认路径真实存在；不存在就写 none（none 是合法取值，不是偷懒）。
+paths:
+  source: src-tauri/src/            # 主生产代码：Rust 后端（app/process_supervisor/dsh_manager/health/lifecycle/tray/plugins/commands/config）
+                                    # 另三处生产代码见 tech_stack.package_layout：ui/（外壳页面）、dsd-side/（DSH 侧插件）、scripts/（发布与构建脚本）
+  tests: none                       # 核实：无 tests/ 目录，src-tauri 无 test target（详见 tech_stack.test 的取证注释）
+  docs: docs/                       # 已核实存在：ARCHITECTURE.md / DEPLOYMENT.md / INTERFACE_CONTRACT.md / cicd.md / DEV_PLAN.md
+  changelog: none                   # 已核实：docs/ 下无任何 CHANGELOG-* 文件；接入后首个闭环产出时建立并改本键
+                                    # （建议 docs/CHANGELOG-设计文档.md：一行一版，记"版本变了什么"）
+  run_ledger: none                  # 已核实：docs/ 下无运行台账文件；首个链闭环时建立并改本键
+                                    # （建议 docs/CHANGELOG-运行台账.md：每链一行——派发/重派/轮次/周期时间/FAIL 分布）
+                                    # 与 changelog 是两份东西：changelog 记版本，run_ledger 记"链跑得怎么样"。
+  contracts: .dsh/contracts/
+  skills: .dsh/skills/
+  tools: .dsh/tools/
+  verify_rewrite: .dsh/tools/verify-rewrite.mjs
+  remote_entry: scripts/dsh-release.mjs   # 本仓库唯一的远程写入路径：读 dsh-release.json → 推送分支/tag → 触发 GitHub Actions 出包
+                                          # 属**发布动作**，须用户明确确认后才执行（脚本自身也要求交互确认或 --yes）
+                                          # 普通 git 提交不属部署远程操作；根目录 push-to-github.ps1 是一次性的仓库引导脚本（远端写死 main）
+
+tech_stack:
+  language: rust                    # src-tauri/Cargo.toml：edition 2021、rust-version 1.77、lib dsh_desktop_lib + bin dsh-desktop
+  language_secondary: [javascript, html, powershell]   # ui/*.html 静态页 + 内联 JS；dsd-side/index.js 与 scripts/dsh-release.mjs 为 Node ESM；scripts/local-setup.ps1 为 PowerShell
+  module_system: cargo              # Rust crate；前端**无打包器**——ui/ 由 Tauri 原样作为资源分发，改页面不需要构建
+  package_manager: npm              # package-lock.json + package.json scripts；CI 用 npm install（.github/workflows/release.yml）
+  runtime: node                     # 运行期依赖 node：经 npx 拉起并托管 `dsh web` 子进程（另需 WebView2 Evergreen）
+  # build **只放"能跑通的那一行命令"**，不放工具名。三处一致取证：
+  #   package.json scripts.build / dsh-release.json build 字段 / .github/workflows/release.yml「Build (NSIS installer)」
+  # C5 会真跑这一行（幂等、无副作用；产物落 src-tauri/target/release/bundle/nsis/*.exe，该目录已被 .gitignore 忽略）。
+  build: npm run tauri -- build
+  build_tool: tauri-cli             # 工具名另立键，不占用 build（tauri CLI 由 devDependencies 的 @tauri-apps/cli ^2 提供）
+  build_dev: npm run tauri -- dev   # 开发态运行入口（package.json scripts.dev → tauri dev）
+  clean: none                       # 核实：package.json 无 clean 脚本，仓库无 Makefile/清理脚本
+                                    # 清理 Rust 产物的等价命令是 `cargo clean --manifest-path src-tauri/Cargo.toml`（未接入为声明入口，故不占用本键）
+  test:
+    runner: none                    # 核实（三处）：src-tauri/src/*.rs 无 #[cfg(test)] / #[test]；Cargo.toml 无 [dev-dependencies]、无 tests/ 集成测试目录；package.json 无 test 脚本
+    unit: none                      # 同上，本项目无单元测试入口 —— 按 testing-standard.md「若项目无测试栈，填 none，测试执行类检查判不适用」
+    framework: none
+    contract_selftest: node .dsh/tests/ref-integrity-check.mjs   # 交付件自检（非项目单测）：本键是 .dsh/ 自带闸门的入口，与 checks.gate 同源
+  # 代码组织（QA 的 C2 分层判据按这些前缀检查变更文件；**列表项后不得写行内注释**，注释会让前缀失配）
+  package_layout:
+    - src-tauri/src/
+    - ui/
+    - dsd-side/
+    - scripts/
+  # 注：**不声明 logging / exception 键**是有意的——code-gate 的 C4 只扫 .js/.mjs 等扩展名，**不扫 .rs**，
+  # 声明 `logging: tracing` 只会给 scripts/、dsd-side/ 的每次变更产出「未出现声明的日志库」这类**恒假**提示。
+  # 本项目的日志与错误处理事实（Rust 侧 tracing + tracing-subscriber，异常以 anyhow/Result 传播；前端控制台日志）
+  # 记在项目级 skill `.dsh/skills/deepseek-harness-desktop-engineering.md`，C4 判「不适用」。
+
+deploy:
+  platform: none                    # 无服务端/容器部署：产物是 Windows NSIS 安装包（per-user），用户本机覆盖安装
+  orchestration: none               # 无 Jenkins/K8s/Helm；发布编排是 GitHub Actions（.github/workflows/release.yml，由 scripts/dsh-release.mjs 维护）
+# ── 以下三项**仅在容器/服务部署时需要**，本项目整段 deploy 均为 none ⇒ 明确不适用，故不声明 ──
+#   registry / arch / service：无制品仓库、无 systemd unit、无 compose service。
+#   发布事实（tag → CI 构建 → NSIS 挂 GitHub Release）写在项目级 skill，不写进 deploy 段——
+#   deploy 段只要有任一非 none 子键，ref-integrity 就会要求 registry/arch/service 三项齐备。
+
+# 与"构建"等价的本地校验入口 —— 交付了闸门就要给出入口，否则没人会去跑它。
+# 事实依据：adapt-project.mjs doctor 判「有 .dsh/tests/ 却没有 checks:」为 FAIL。
+checks:
+  gate: node .dsh/tests/ref-integrity-check.mjs      # 本项目总闸：交付件自包含 + 契约引用不悬空 + 占位符可解析
+  lint: none                         # 核实：无 .eslintrc/eslint.config/biome.json/rustfmt.toml/clippy.toml/.prettierrc，
+                                     # package.json 无 lint 脚本，release.yml 无 lint/fmt/clippy 步骤。
+                                     # Rust 侧 cargo fmt / cargo clippy 可用但**未接入**任何入口，故不虚报。
+  profile_ref: node .dsh/tools/profile-ref-check.mjs          # 占位符解析核对
+  code_gate_three_state: node .dsh/tests/code-gate-check.mjs  # 门禁三态（N/A / PASS / FAIL / REVIEW）自检
+  line_caliber: node .dsh/tests/lib-lines-check.mjs           # 行数口径回归
+  code_gate: node .dsh/tools/code-gate.mjs --scope <变更文件...>   # QA 的 C2–C6；scope 由派发方给出
+
+# 项目事实声明（供契约/人工作为依据；判据本体在 _shared/engineering-baseline.md，不在本文件）
+security:
+  branch_policy:
+    default_branch: master          # 事实：本地分支 master；origin/HEAD → origin/master（远端另有 origin/main）
+    ai_forbidden_branches: [main, master]   # 按 _shared/engineering-baseline.md「AI 不操作 main/master」
+    ai_allowed: [develop, feature-*, fix-*]
+    conflict_note: 当前检出分支即 master，与基线规则冲突；接入时须由用户裁决（在 master 上人工提交，或先建 develop/feature 分支再动代码）
