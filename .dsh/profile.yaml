@@ -81,10 +81,10 @@ checks:
   line_caliber: node .dsh/tests/lib-lines-check.mjs           # 行数口径回归
   code_gate: node .dsh/tools/code-gate.mjs --scope <变更文件...>   # QA 的 C2–C6；scope 由派发方给出
 
-# 项目事实声明（供契约/人工作为依据；判据本体在 _shared/engineering-baseline.md，不在本文件）
+# 项目事实声明（供契约/人工作为依据；判据本体在 _shared/engineering-rules.md，不在本文件）
 security:
   branch_policy:
     default_branch: master          # 事实：本地分支 master；origin/HEAD → origin/master（远端另有 origin/main）
-    ai_forbidden_branches: [main, master]   # 按 _shared/engineering-baseline.md「AI 不操作 main/master」
+    ai_forbidden_branches: [main, master]   # 按 _shared/engineering-rules.md「AI 不操作 main/master」
     ai_allowed: [develop, feature-*, fix-*]
-    conflict_note: 当前检出分支即 master，与基线规则冲突；接入时须由用户裁决（在 master 上人工提交，或先建 develop/feature 分支再动代码）
+    conflict_note: 当前检出分支即 master，与基线红线冲突。**2026-09-20 用户裁决：本仓授权在 master 上提交**（原红线保留为规则，但用户已明确授权，不再要求先建 feature 分支）。授权状态变化时改这一行。
