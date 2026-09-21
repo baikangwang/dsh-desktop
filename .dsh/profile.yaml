@@ -64,10 +64,15 @@ tech_stack:
 deploy:
   platform: none                    # 无服务端/容器部署：产物是 Windows NSIS 安装包（per-user），用户本机覆盖安装
   orchestration: none               # 无 Jenkins/K8s/Helm；发布编排是 GitHub Actions（.github/workflows/release.yml，由 scripts/dsh-release.mjs 维护）
-# ── 以下三项**仅在容器/服务部署时需要**，本项目整段 deploy 均为 none ⇒ 明确不适用，故不声明 ──
-#   registry / arch / service：无制品仓库、无 systemd unit、无 compose service。
-#   发布事实（tag → CI 构建 → NSIS 挂 GitHub Release）写在项目级 skill，不写进 deploy 段——
-#   deploy 段只要有任一非 none 子键，ref-integrity 就会要求 registry/arch/service 三项齐备。
+  # ── 2026-09-20 订正：原写"…故不声明"，该推理**不成立**，现改为据实声明 none ──
+  #   原推理是"整段 deploy 均为 none ⇒ 明确不适用，故不声明"。漏洞在于：
+  #   `deploy-standard.md` 的 Makefile 形状是**无条件**输出 `REGISTRY ?= {{deploy.registry}}` 的，
+  #   契约里**没有**"未声明即不适用"的机制（只有 `tech_stack.build` 有）。
+  #   结果是：不声明 ⇒ 产物里留下未解析的 `{{deploy.registry}}` 字面量 ⇒ 比填错更隐蔽。
+  #   现按 HelpDocToolkit / teamcodingknowledge / deepseek-harness-UI 三项目的既有写法据实填 none。
+  registry: none                    # 无容器制品仓库（NSIS 安装包走 GitHub Release，不走 registry）
+  service: none                     # 无 systemd unit / compose service（非服务型应用）
+  arch: none                        # 不做多架构镜像构建（安装包为 Windows per-user）
 
 # 与"构建"等价的本地校验入口 —— 交付了闸门就要给出入口，否则没人会去跑它。
 # 事实依据：adapt-project.mjs doctor 判「有 .dsh/tests/ 却没有 checks:」为 FAIL。
