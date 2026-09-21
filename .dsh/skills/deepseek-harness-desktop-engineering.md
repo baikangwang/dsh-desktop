@@ -4,7 +4,7 @@ description: dsh-desktop 项目工程知识：Tauri 2 双层结构（Rust 壳 + 
 whenToUse: 在本项目做开发/构建/打包/发布/排障，需要项目级工程上下文时（尤其涉及 src-tauri、ui、dsd-side、scripts 四处的改动）。
 ---
 
-# deepseek-harness-desktop-engineering — 项目级 skill（形态 C，按需加载）
+# deepseek-harness-desktop-engineering — 项目级 skill（按需加载）
 
 > 属性：项目级（`.dsh/skills/` 官方发现根）。模型按需 `skill("deepseek-harness-desktop-engineering")` 拉取。
 > 用途：低频、参考型的**本项目**工程知识——技术栈做法、目录纪律、构建/打包/发布细节、平台差异、已知坑。
@@ -14,7 +14,7 @@ whenToUse: 在本项目做开发/构建/打包/发布/排障，需要项目级�
 > **知识与纪律**（怎么做、为什么这么做、有哪些坑）→ 本 skill。
 > 共享契约只写"如何检查"，不写本项目取值；两者都不重复契约里的通用内容。
 >
-> 本文件全部事实来自对仓库的真实阅读（2026-09-20）：`package.json`、`dsh-release.json`、
+> 本文件全部事实来自对仓库的真实阅读：`package.json`、`dsh-release.json`、
 > `src-tauri/{Cargo.toml,tauri.conf.json,src/*.rs}`、`dsd-side/`、`scripts/`、
 > `.github/workflows/release.yml`、`docs/{ARCHITECTURE,DEPLOYMENT,INTERFACE_CONTRACT,cicd}.md`、`README.md`。
 
@@ -107,7 +107,7 @@ node scripts/dsh-release.mjs               # 交互确认后：维护 workflow +
   2. **已存在的 tag 强制移动不会重新触发** GitHub workflow；同版本重发要先删远程 tag（脚本 `--force` 会删重建）。
   3. `release.yml` 是**生成物**（首行写着 do not edit manually）：改它要改 `scripts/dsh-release.mjs`
      里的模板，否则下次发布会把手工改动覆盖掉。
-- 版本一致性实况（2026-09-20 核实）：CI 只断言 `tag == tauri.conf.json.version`；
+- 版本一致性实况：CI 只断言 `tag == tauri.conf.json.version`；
   当前 `package.json` 是 `0.1.0` 而 `tauri.conf.json` / `Cargo.toml` 是 `0.1.1`——**已经漂移**。
   `docs/cicd.md` §2 要求"与 package.json 保持一致"，bump 时三处一起改，别只信 CI 的断言。
 - CI 细节：`windows-latest` + Node 22 + `dtolnay/rust-toolchain@stable`（target `x86_64-pc-windows-msvc`）
@@ -134,7 +134,7 @@ node scripts/dsh-release.mjs               # 交互确认后：维护 workflow +
    用 `edit` / `write` 工具改过 `.ps1` 后要确认 BOM 仍在（丢了要补回来）。
 2. **中文提交信息不要经 PowerShell**：用 `write`/`edit` 写消息文件 → `git commit -F <文件>`；
    `Get-Content … | git commit -F -` 会按本机代码页 936 误解码 UTF-8 而乱码。
-3. **`.env` 未被 `.gitignore` 忽略**（2026-09-20 实测 `git status` 显示 `?? .env`）。
+3. **`.env` 未被 `.gitignore` 忽略**（`git status` 显示 `?? .env`）。
    它是 DSH 的项目根凭证层，**不应提交**；提交时只 `git add` 明确列出的路径（如 `git add .dsh`），
    **绝不 `git add -A` / `git add .`**。
 4. **`.dsh/tmp/`、`.dsh/reports/` 是模式的临时产物**（链闭环即删），`.gitignore` 目前也没忽略它们——
@@ -165,7 +165,7 @@ node scripts/dsh-release.mjs               # 交互确认后：维护 workflow +
 - **未做（P5，见 `docs/DEV_PLAN.md` §100-103）**：Authenticode 代码签名（无证书，安装包未签名，
   首次运行会触发 SmartScreen 告警）、插件"卸载"（v1 只做安装/升级，卸载要手工删 profile 配置）、
   config 界面与状态展示细节仍待评估。**不要声称这些已支持。**
-- **文档漂移（2026-09-20 核实）**：`docs/DEV_PLAN.md` 提到的 `scripts/release.ps1` 与
+- **文档漂移**：`docs/DEV_PLAN.md` 提到的 `scripts/release.ps1` 与
   `ensure-dsh.ps1` **在仓库里不存在**（后者已随"npx 执行 + 专属缓存"的升级模型重构被删除，
   见同文件 §70-78）；`.gitignore` 的注释仍写着 `scripts/ensure-dsh.ps1`；
   DEV_PLAN 的"新环境现状"表说 Rust 与 MSVC 未装（现已装好且可构建，见 `src-tauri/target` 里的既有产物）。

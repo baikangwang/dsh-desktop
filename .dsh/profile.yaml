@@ -1,10 +1,10 @@
-# 敏捷模式（agile）— 本项目的骨架声明（形态 A）
+# 敏捷模式（agile）— 本项目的骨架声明
 # 契约只写"如何检查"，具体取值一律来自本文件；**换项目时改本文件，不改契约**。
 #
 # 本文件的每个取值都来自对仓库的真实阅读，取证位置写在注释里：
 #   package.json / dsh-release.json / .github/workflows/release.yml / src-tauri/Cargo.toml
 #   / src-tauri/src/*.rs / docs/{ARCHITECTURE,DEPLOYMENT,cicd}.md / README.md
-# 接入日期 2026-09-20（首次交付，此前本项目完全没有 .dsh/）。
+
 meta:
   kind: agile-project
   version: 2
@@ -64,12 +64,8 @@ tech_stack:
 deploy:
   platform: none                    # 无服务端/容器部署：产物是 Windows NSIS 安装包（per-user），用户本机覆盖安装
   orchestration: none               # 无 Jenkins/K8s/Helm；发布编排是 GitHub Actions（.github/workflows/release.yml，由 scripts/dsh-release.mjs 维护）
-  # ── 2026-09-20 订正：原写"…故不声明"，该推理**不成立**，现改为据实声明 none ──
-  #   原推理是"整段 deploy 均为 none ⇒ 明确不适用，故不声明"。漏洞在于：
-  #   `deploy-standard.md` 的 Makefile 形状是**无条件**输出 `REGISTRY ?= {{deploy.registry}}` 的，
-  #   契约里**没有**"未声明即不适用"的机制（只有 `tech_stack.build` 有）。
-  #   结果是：不声明 ⇒ 产物里留下未解析的 `{{deploy.registry}}` 字面量 ⇒ 比填错更隐蔽。
-  #   现按 HelpDocToolkit / teamcodingknowledge / deepseek-harness-UI 三项目的既有写法据实填 none。
+  # **必须显式声明 none，不能整段省掉**——`deploy-standard.md` 的 Makefile 形状会**无条件**输出
+  #   `REGISTRY ?= {{deploy.registry}}`，不声明就会在产物里留下未解析的 `{{deploy.registry}}` 字面量。
   registry: none                    # 无容器制品仓库（NSIS 安装包走 GitHub Release，不走 registry）
   service: none                     # 无 systemd unit / compose service（非服务型应用）
   arch: none                        # 不做多架构镜像构建（安装包为 Windows per-user）
@@ -92,4 +88,4 @@ security:
     default_branch: master          # 事实：本地分支 master；origin/HEAD → origin/master（远端另有 origin/main）
     ai_forbidden_branches: [main, master]   # 按 _shared/engineering-rules.md「AI 不操作 main/master」
     ai_allowed: [develop, feature-*, fix-*]
-    conflict_note: 当前检出分支即 master，与基线红线冲突。**2026-09-20 用户裁决：本仓授权在 master 上提交**（原红线保留为规则，但用户已明确授权，不再要求先建 feature 分支）。授权状态变化时改这一行。
+    conflict_note: 当前检出分支即 master，与基线红线冲突。**本仓已获用户授权在 master 上提交**（红线保留为规则，但不再要求先建 feature 分支）。授权状态变化时改这一行。
