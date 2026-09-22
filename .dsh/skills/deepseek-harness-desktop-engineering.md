@@ -1,6 +1,6 @@
 ---
 name: deepseek-harness-desktop-engineering
-description: dsh-desktop 项目工程知识：Tauri 2 双层结构（Rust 壳 + WebView2 加载 dsh web）、构建与 NSIS 打包、tag→GitHub Actions 发布流程、Windows 运行期目录与子进程环境契约、.ps1 BOM 与中文提交等实测坑。
+description: dsh-desktop 项目工程知识：Tauri 2 双层结构（Rust 壳 + WebView2 加载 dsh web）、构建与 NSIS 打包、tag→GitHub Actions 发布流程、Windows 运行期目录与子进程环境契约、.ps1 BOM 与中文提交纪律。
 whenToUse: 在本项目做开发/构建/打包/发布/排障，需要项目级工程上下文时（尤其涉及 src-tauri、ui、dsd-side、scripts 四处的改动）。
 ---
 
@@ -128,7 +128,7 @@ node scripts/dsh-release.mjs               # 交互确认后：维护 workflow +
   `--no-open` 只在 dsh ≥ `0.1.0-rc.8` 时才传入（`dsh_manager.rs:508-509`）——
   rc.6/rc.7 **没有**该参数，无条件传会启动失败。版本门与参数传递必须成对改。
 
-## 7. 本仓库实测坑（编码与提交纪律）
+## 7. 本仓库编码与提交纪律
 
 1. **`.ps1` 必须带 UTF-8 BOM**：本仓库 PowerShell 5.1 无 BOM 读中文会乱码（`docs/cicd.md` §4）。
    用 `edit` / `write` 工具改过 `.ps1` 后要确认 BOM 仍在（丢了要补回来）。
@@ -143,7 +143,7 @@ node scripts/dsh-release.mjs               # 交互确认后：维护 workflow +
    本机 `.tmp/phase1-dsh-home/.credentials.yaml` 是被忽略的 `.tmp/` 下的探测残留。
    `push-to-github.ps1` 用 `$env:GITHUB_TOKEN` 一次性鉴权、不写文件，用后应轮换 token。
 6. **分支事实**：本地检出 `master`，`origin/HEAD → origin/master`（远端另有 `origin/main`）。
-   这与 `_shared/engineering-baseline.md`「AI 不操作 main/master」冲突；
+   这与 `_shared/engineering-rules.md`「分支管理」的「AI 不操作 main/master」冲突；
    事实与冲突已登记在 `profile.yaml` 的 `security.branch_policy.conflict_note`，**动代码前先由用户裁决分支**。
    另注：根 `push-to-github.ps1` 默认推 `main`，与当前默认分支 `master` 不一致，是一次性引导脚本的历史遗留。
 7. `docs/cicd.md` §2 的示例命令写了 `git add -A && git commit … && git push origin main`——
